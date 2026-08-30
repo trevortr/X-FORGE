@@ -68,8 +68,8 @@ X-FORGE is a set of independently containerized services on a shared Docker Comp
 Every filter service exposes the same contract, which is what makes them interchangeable:
 
 ```
-POST /score    { molecules: [...] }  →  { molecules: [...annotated with this stage's fields] }
-POST /filter   { molecules: [...] }  →  { passed: [...], rejected: [...] }
+POST /score    { molecules: [...], parameters: {...} }  →  { molecules: [...annotated] }
+POST /filter   { molecules: [...], parameters: {...} }  →  { passed: [...], rejected: [...] }
 ```
 
 A shared schema library (`libs/schemas`) defines the `Molecule` object and API models that every service imports, preventing schema drift across service boundaries.
@@ -127,7 +127,10 @@ Unit tests live alongside the service they test; only integration tests that spa
 ## Running it
 
 ```bash
-docker compose up
+docker compose up --build \
+  --abort-on-container-exit \
+  --exit-code-from orchestrator \
+  orchestrator
 ```
 
 This builds and starts every service, then the orchestrator runs the configured pipeline against the example target in `config/targets/`, iterating for the configured number of rounds and writing results to `results/`.
@@ -148,10 +151,14 @@ Portfolio / demonstration project. Not intended for real drug discovery decision
 
 ### Current implementation
 
-Two fixed-endpoint services are runnable. `generator` accepts one or more hit
+The two fixed-endpoint services and the orchestration loop are runnable.
+`generator` accepts one or more hit
 SMILES through `POST /generate` and uses REINVENT4 Mol2Mol sampling to generate
 structurally related candidates. `admet-moo` accepts filtered candidates through
 `POST /optimize`, predicts a modular ADMET objective panel with ADMET-AI, builds
 the Pareto front with pymoo, and supports knee-point, desirability/geometric
-mean, or hypervolume-contribution lead selection. The filter and orchestrator
-services remain planned work. See the service READMEs for API and model details.
+mean, or hypervolume-contribution lead selection. `orchestrator` reads the YAML
+configuration, drives the iterative feedback loop, and writes auditable run and
+per-iteration results. Filter services remain planned work, so the checked-in
+three-iteration acetaminophen example uses the valid empty-filter-chain mode.
+See the service READMEs for API and runtime details.

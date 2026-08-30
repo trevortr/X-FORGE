@@ -49,3 +49,19 @@ services:
       timeout: 60s
       retries: 3
       start_period: 180s
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/orchestrator/Dockerfile
+    environment:
+      XFORGE_OUTPUT_DIR: /results/example_run
+    volumes:
+      - ./config:/config:ro
+      - ./results:/results
+    depends_on:
+      generator:
+        condition: service_healthy
+      admet-moo:
+        condition: service_healthy
+    restart: "no"

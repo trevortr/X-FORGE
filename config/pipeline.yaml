@@ -1,0 +1,29 @@
+target: targets/example_target.yaml
+
+# An empty filter chain is the first complete vertical slice. Add named filter
+# services here as they are implemented; the orchestrator calls them in order.
+pipeline: []
+
+iterations: 3
+candidates_per_iteration: 5
+top_k_feedback: 2
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 42
+
+admet_moo:
+  properties: null
+  selection:
+    method: desirability
+    weights:
+      herg_blocking: 2.0
+    reference_point: null
+
+http:
+  timeout_seconds: 900
+  max_attempts: 10
+  backoff_seconds: 1
+
+output_dir: results/example_run

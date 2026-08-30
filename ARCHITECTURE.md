@@ -41,11 +41,11 @@ Every filter service — regardless of what it actually computes — exposes the
 
 ```
 POST /score
-  request:  { "molecules": [Molecule, ...] }
+  request:  { "molecules": [Molecule, ...], "parameters": {...} }
   response: { "molecules": [Molecule, ...] }   # same molecules, annotated with this stage's fields
 
 POST /filter
-  request:  { "molecules": [Molecule, ...] }
+  request:  { "molecules": [Molecule, ...], "parameters": {...} }
   response: { "passed": [Molecule, ...], "rejected": [Molecule, ...] }
 
 GET /health
@@ -56,7 +56,7 @@ GET /health
 
 ```
 POST /generate
-  request:  { "seeds": [Molecule, ...], "n_candidates": int }
+  request:  { "seeds": [Molecule, ...], "n_candidates_per_seed": int }
   response: { "molecules": [Molecule, ...] }
 
 POST /optimize
@@ -154,6 +154,27 @@ Each iteration:
 3. Survivors are sent to `admet-moo`, which predicts ADMET properties with ADMET-AI and performs non-dominated (Pareto) sorting with pymoo.
 4. The human-selected decision method — knee point, desirability functions with weighted geometric mean, or hypervolume contribution — ranks only the Pareto-front molecules. The top `top_k_feedback` become the next iteration's seed set.
 5. Repeat for the configured number of iterations, or until a stopping criterion is met (e.g., Pareto front stops improving).
+
+The population setting is a total per-iteration budget even though the
+generator API samples per seed. The orchestrator divides the budget across the
+current seed set, rounds up, and trims any excess returned candidates. It also
+adds a `generator` score record containing REINVENT's Tanimoto/NLL values before
+the molecules enter the filter chain.
+
+### Run artifacts and lineage
+
+The orchestrator retains more than the final leads. Every iteration checkpoint
+contains its input seeds, all generated candidates, passed and rejected
+populations from each filter, all ADMET-evaluated survivors, the Pareto front,
+and selected feedback molecules. A top-level `run.json` combines those
+checkpoints with run status/timestamps and a deduplicated molecule catalog.
+
+For a molecule ID seen again in a later iteration, the orchestrator starts from
+its latest known score history and appends new records. It rejects any service
+response that changes the input population during scoring, returns an invalid
+filter partition, or rewrites the existing score prefix. Children keep only
+their immediate `parent_id`; the complete ancestry remains reconstructable by
+following IDs through the molecule catalog.
 
 **Why Pareto selection rather than a single scalarized reward**: ADMET objectives routinely trade off against each other (e.g., improving metabolic stability can worsen solubility), and collapsing them into one weighted score requires committing to relative weights up front, which is exactly the kind of judgment call that's better made by inspecting a front than baked into a formula. Non-dominated sorting (NSGA-II-style) surfaces the actual trade-off surface instead of a single number.
 

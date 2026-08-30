@@ -45,7 +45,9 @@ class ReinventGenerator:
         self._runtime_probe: tuple[bool, str | None] | None = None
 
     def readiness(self) -> tuple[bool, bool]:
-        executable_available = shutil.which(self.settings.reinvent_executable) is not None
+        executable_available = (
+            shutil.which(self.settings.reinvent_executable) is not None
+        )
         model_available = self.settings.model_path.is_file()
         return executable_available, model_available
 
@@ -104,7 +106,10 @@ class ReinventGenerator:
         if not readiness.runtime_available:
             raise ReinventNotReadyError(readiness.detail or "REINVENT4 is not ready")
 
-        with self._run_slots, tempfile.TemporaryDirectory(prefix="xforge-reinvent-") as tmp:
+        with (
+            self._run_slots,
+            tempfile.TemporaryDirectory(prefix="xforge-reinvent-") as tmp,
+        ):
             workdir = Path(tmp)
             seeds_path = workdir / "seeds.smi"
             output_path = workdir / "generated.csv"
@@ -184,7 +189,14 @@ class ReinventGenerator:
         output_path: Path,
         request: GenerationJob,
     ) -> list[GeneratedCandidate]:
-        seeds_by_smiles = {seed.smiles: seed for seed in request.seeds}
+        seeds_by_smiles = {
+            representation: seed
+            for seed in request.seeds
+            for representation in {
+                seed.smiles,
+                ReinventGenerator._canonical_smiles(seed.smiles),
+            }
+        }
         molecules: list[GeneratedCandidate] = []
         with output_path.open(newline="", encoding="utf-8") as handle:
             reader = csv.DictReader(handle)
@@ -200,7 +212,9 @@ class ReinventGenerator:
                 if not smiles or not parent_smiles:
                     continue
                 parent = seeds_by_smiles.get(parent_smiles)
-                parent_id = parent.id if parent and parent.id else molecule_id(parent_smiles)
+                parent_id = (
+                    parent.id if parent and parent.id else molecule_id(parent_smiles)
+                )
                 molecules.append(
                     GeneratedCandidate(
                         smiles=smiles,
@@ -212,6 +226,16 @@ class ReinventGenerator:
                     )
                 )
         return molecules
+
+    @staticmethod
+    def _canonical_smiles(smiles: str) -> str:
+        """Match REINVENT's canonicalized Input_SMILES back to an API seed."""
+        try:
+            from rdkit import Chem
+        except ImportError:
+            return smiles
+        molecule = Chem.MolFromSmiles(smiles)
+        return Chem.MolToSmiles(molecule) if molecule is not None else smiles
 
     @staticmethod
     def _optional_float(value: str | None) -> float | None:
@@ -229,6 +253,8 @@ class ReinventGenerator:
     ) -> str:
         parts = [completed.stderr.strip(), completed.stdout.strip()]
         if log_path.is_file():
-            parts.append(log_path.read_text(encoding="utf-8", errors="replace")[-4_000:])
+            parts.append(
+                log_path.read_text(encoding="utf-8", errors="replace")[-4_000:]
+            )
         details = "\n".join(part for part in parts if part)
         return details[-4_000:] if details else f"exit code {completed.returncode}"

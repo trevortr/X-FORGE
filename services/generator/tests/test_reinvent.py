@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import csv
 import subprocess
-import tomllib
 from pathlib import Path
 
 import pytest
-
+import tomllib
 from app.domain import GenerationJob, RuntimeReadiness, Seed
 from app.models import molecule_id
 from app.reinvent import ReinventError, ReinventGenerator
@@ -83,6 +82,28 @@ def test_read_output_preserves_parent_and_model_scores(tmp_path: Path) -> None:
     assert molecules[0].nll == pytest.approx(12.4)
 
 
+def test_read_output_matches_canonicalized_parent_to_supplied_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "generated.csv"
+    output.write_text(
+        "SMILES,Input_SMILES,Tanimoto,NLL\nCCN,CCO-canonical,0.5,5.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ReinventGenerator,
+        "_canonical_smiles",
+        staticmethod(lambda smiles: f"{smiles}-canonical"),
+    )
+
+    molecules = make_generator()._read_output(
+        output,
+        make_job(seeds=(Seed(smiles="CCO", id="supplied-parent-id"),)),
+    )
+
+    assert molecules[0].parent_id == "supplied-parent-id"
+
+
 def test_read_output_rejects_unknown_csv_shape(tmp_path: Path) -> None:
     output = tmp_path / "generated.csv"
     output.write_text("molecule,parent\nCCN,CCO\n", encoding="utf-8")
@@ -107,8 +128,7 @@ def test_generate_invokes_reinvent_and_returns_response(monkeypatch) -> None:
             config = tomllib.load(handle)
         output = Path(config["parameters"]["output_file"])
         output.write_text(
-            "SMILES,SMILES_state,Input_SMILES,Tanimoto,NLL\n"
-            "CCN,VALID,CCO,0.67,12.4\n",
+            "SMILES,SMILES_state,Input_SMILES,Tanimoto,NLL\nCCN,VALID,CCO,0.67,12.4\n",
             encoding="utf-8",
         )
         return subprocess.CompletedProcess(command, returncode=0, stdout="", stderr="")
@@ -137,7 +157,9 @@ def test_runtime_readiness_probes_cli_once(monkeypatch) -> None:
         nonlocal calls
         calls += 1
         assert command == ["reinvent", "--help"]
-        return subprocess.CompletedProcess(command, returncode=0, stdout="help", stderr="")
+        return subprocess.CompletedProcess(
+            command, returncode=0, stdout="help", stderr=""
+        )
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
