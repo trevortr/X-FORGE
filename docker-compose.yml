@@ -26,3 +26,26 @@ services:
       timeout: 30s
       retries: 3
       start_period: 60s
+
+  admet-moo:
+    build:
+      context: .
+      dockerfile: services/admet_moo/Dockerfile
+      args:
+        PYTORCH_VERSION: "2.13.0"
+    environment:
+      ADMET_NUM_WORKERS: ${ADMET_NUM_WORKERS:-0}
+    ports:
+      - "127.0.0.1:12001:12001"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12001/health', timeout=30)
+      interval: 30s
+      timeout: 60s
+      retries: 3
+      start_period: 180s

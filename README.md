@@ -110,7 +110,7 @@ x-forge/
 │   ├── filter-synthesizability/
 │   ├── filter-physchem/
 │   ├── filter-docking/
-│   ├── admet-moo/
+│   ├── admet_moo/
 │   └── orchestrator/
 │       # each service has its own Dockerfile, dependencies, app/, and tests/
 ├── tests/
@@ -148,8 +148,10 @@ Portfolio / demonstration project. Not intended for real drug discovery decision
 
 ### Current implementation
 
-The first runnable slice is the `generator` service. It accepts one or more hit
+Two fixed-endpoint services are runnable. `generator` accepts one or more hit
 SMILES through `POST /generate` and uses REINVENT4 Mol2Mol sampling to generate
-structurally related candidates. The filter, ADMET/MOO, and orchestrator
-services remain planned work. See `services/generator/README.md` for model setup
-and API usage.
+structurally related candidates. `admet-moo` accepts filtered candidates through
+`POST /optimize`, predicts a modular ADMET objective panel with ADMET-AI, builds
+the Pareto front with pymoo, and supports knee-point, desirability/geometric
+mean, or hypervolume-contribution lead selection. The filter and orchestrator
+services remain planned work. See the service READMEs for API and model details.

@@ -118,10 +118,10 @@ top_k_feedback: 10
 ```yaml
 services:
   generator:        "http://generator:12000"
-  synthesizability: "http://filter-synthesizability:12001"
-  physchem:         "http://filter-physchem:12002"
-  docking:          "http://filter-docking:12003"
-  admet_moo:        "http://admet-moo:12004"
+  admet_moo:        "http://admet-moo:12001"
+  synthesizability: "http://filter-synthesizability:12002"
+  physchem:         "http://filter-physchem:12003"
+  docking:          "http://filter-docking:12004"
 ```
 
 **Why two files instead of one**: `pipeline.yaml` answers a scientific/experimental question (what filters, what order, what thresholds) and is what you'd change between experiments. `services.yaml` answers a deployment question (what network location serves this stage) and is what you'd change between environments (local Compose vs. a future Kubernetes deployment). Conflating them would mean every environment change requires touching experiment config, and vice versa.
@@ -151,13 +151,13 @@ Each iteration:
 
 1. `generator` produces `candidates_per_iteration` molecules from the current seed set.
 2. Candidates flow through the configured filter chain; each stage scores and gates.
-3. Survivors are sent to `admet-moo`, which scores ADMET properties and performs non-dominated (Pareto) sorting.
-4. The top `top_k_feedback` molecules by crowding distance on the Pareto front become the seed set for the next iteration.
+3. Survivors are sent to `admet-moo`, which predicts ADMET properties with ADMET-AI and performs non-dominated (Pareto) sorting with pymoo.
+4. The human-selected decision method — knee point, desirability functions with weighted geometric mean, or hypervolume contribution — ranks only the Pareto-front molecules. The top `top_k_feedback` become the next iteration's seed set.
 5. Repeat for the configured number of iterations, or until a stopping criterion is met (e.g., Pareto front stops improving).
 
 **Why Pareto selection rather than a single scalarized reward**: ADMET objectives routinely trade off against each other (e.g., improving metabolic stability can worsen solubility), and collapsing them into one weighted score requires committing to relative weights up front, which is exactly the kind of judgment call that's better made by inspecting a front than baked into a formula. Non-dominated sorting (NSGA-II-style) surfaces the actual trade-off surface instead of a single number.
 
-**Why top-K by crowding distance rather than top-K by any single objective**: this keeps the feedback set diverse across the front rather than collapsing toward one extreme (e.g., all-solubility, no-potency candidates), which matters for keeping the generator exploring a broad region of chemical space rather than converging prematurely.
+**Why make Pareto-front decision-making configurable**: the front separates objective trade-offs from the human preference used to pick leads. Knee-point selection favors high-tradeoff compromises, desirability functions encode explicit endpoint preferences, and hypervolume contribution favors candidates that preserve the largest unique portion of objective space. This lets an experiment change its decision policy without changing prediction or Pareto-ranking code.
 
 ---
 
@@ -168,7 +168,7 @@ Each iteration:
 **Reasoning**: At this system's scale (tens to low-hundreds of molecules per iteration, single-machine Compose deployment), the queue's benefits — decoupled producers/consumers, backpressure handling, horizontal fan-out — aren't load-bearing, but its costs (broker to run and monitor, harder to debug, harder to demo) are real. REST is directly curl-able during development and easy to represent in a single sequence diagram. A queue-based design is documented here as a natural extension point if the project were scaled to production throughput.
 
 ### ADR-2: Compose service-name networking over an external CLI orchestrator
-**Decision**: The orchestrator runs inside the Compose network and calls other services by hostname (`http://filter-docking:12003`), rather than running as an external client hitting `localhost:<port>`.
+**Decision**: The orchestrator runs inside the Compose network and calls other services by hostname (`http://filter-docking:12004`), rather than running as an external client hitting `localhost:<port>`.
 **Reasoning**: This is the architecture that actually resembles a real microservices deployment, and it removes the host-port-mapping bookkeeping from the orchestrator entirely — it only ever needs to know Compose service names via `services.yaml`. The trade-off is a slightly less convenient debug loop (you can't as trivially attach a debugger to the orchestrator process), mitigated by giving every service a mapped host port anyway for manual `curl` access during development.
 
 ### ADR-3: AutoDock Vina over higher-fidelity docking tools

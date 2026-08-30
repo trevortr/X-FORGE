@@ -1,0 +1,4 @@
+admet-ai==2.0.1
+fastapi==0.141.1
+pymoo==0.6.2
+uvicorn[standard]==0.52.4
