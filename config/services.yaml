@@ -1,0 +1,2 @@
+services:
+  generator: "http://generator:12000"

@@ -1,0 +1,28 @@
+services:
+  generator:
+    build:
+      context: .
+      dockerfile: services/generator/Dockerfile
+      args:
+        REINVENT4_REF: v4.8
+        REINVENT_PROCESSOR: cpu
+    environment:
+      REINVENT_DEVICE: ${REINVENT_DEVICE:-cpu}
+      REINVENT_MODEL_PATH: /models/mol2mol_medium_similarity.prior
+      REINVENT_TIMEOUT_SECONDS: ${REINVENT_TIMEOUT_SECONDS:-900}
+    ports:
+      - "127.0.0.1:12000:12000"
+    volumes:
+      - ./models/reinvent:/models:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12000/health', timeout=5)
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 60s

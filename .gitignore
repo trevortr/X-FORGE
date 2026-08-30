@@ -3,6 +3,12 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Downloaded model weights and generated run artifacts
+models/reinvent/*.prior
+models/reinvent/*.model
+models/reinvent/*.chkpt
+results/
+
 # C extensions
 *.so
 
