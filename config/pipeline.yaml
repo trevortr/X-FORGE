@@ -25,5 +25,3 @@ http:
   timeout_seconds: 900
   max_attempts: 10
   backoff_seconds: 1
-
-output_dir: results/example_run

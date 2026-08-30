@@ -117,7 +117,7 @@ x-forge/
 │   └── integration/                 # cross-service, full-loop smoke test
 ├── .github/workflows/               # per-service CI + compose smoke test
 └── results/
-    └── example_run/                 # committed sample output
+    └── <run-name>/                  # iteration checkpoints + full run output
 ```
 
 Unit tests live alongside the service they test; only integration tests that span multiple services live at the repo root.
@@ -127,6 +127,7 @@ Unit tests live alongside the service they test; only integration tests that spa
 ## Running it
 
 ```bash
+XFORGE_RUN_NAME=my-acetaminophen-run \
 docker compose up --build \
   --abort-on-container-exit \
   --exit-code-from orchestrator \
@@ -135,13 +136,18 @@ docker compose up --build \
 
 This builds and starts every service, then the orchestrator runs the configured pipeline against the example target in `config/targets/`, iterating for the configured number of rounds and writing results to `results/`.
 
+`XFORGE_RUN_NAME` selects the subdirectory beneath `results/`. It may contain
+letters, numbers, dots, underscores, and hyphens. Omit it to automatically use
+the target name and UTC start time, such as
+`results/acetaminophen-20260830T194631123456Z/`.
+
 To run against your own target, add a target config with a seed SMILES string, a PDB structure for the binding pocket, and pocket coordinates, then point `pipeline.yaml` at it.
 
 ---
 
 ## Validation
 
-To demonstrate the pipeline actually works, rather than just "producing output," `results/example_run/` includes a run against a known target where the pipeline is checked against known SAR (structure-activity relationship) trends for that pocket — showing whether the loop recovers previously known potent analogs of the seed molecule and whether the Pareto front improves across iterations.
+To demonstrate the pipeline actually works, rather than just "producing output," a named run directory can be retained and checked against known SAR (structure-activity relationship) trends for its target pocket — showing whether the loop recovers previously known potent analogs of the seed molecule and whether the Pareto front improves across iterations.
 
 ---
 

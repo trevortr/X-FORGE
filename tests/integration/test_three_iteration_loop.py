@@ -38,7 +38,6 @@ http:
   timeout_seconds: 10
   max_attempts: 1
   backoff_seconds: 0
-output_dir: ignored-by-test
 """,
         encoding="utf-8",
     )
@@ -122,11 +121,13 @@ services:
             )
         raise AssertionError(f"unexpected request: {request.method} {request.url}")
 
-    output_dir = tmp_path / "results"
+    results_root = tmp_path / "results"
+    output_dir = results_root / "acetaminophen-smoke-test"
     configuration = ConfigurationLoader.load(
         config_dir / "pipeline.yaml",
         config_dir / "services.yaml",
-        output_override=output_dir,
+        run_name_override="acetaminophen-smoke-test",
+        results_root_override=results_root,
     )
     with ServiceClient(
         configuration.services,

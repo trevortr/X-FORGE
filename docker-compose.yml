@@ -55,7 +55,8 @@ services:
       context: .
       dockerfile: services/orchestrator/Dockerfile
     environment:
-      XFORGE_OUTPUT_DIR: /results/example_run
+      XFORGE_RESULTS_ROOT: /results
+      XFORGE_RUN_NAME: ${XFORGE_RUN_NAME:-}
     volumes:
       - ./config:/config:ro
       - ./results:/results

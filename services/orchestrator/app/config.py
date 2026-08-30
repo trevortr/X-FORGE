@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -59,7 +60,7 @@ class PipelineFile(BaseModel):
     generator: GeneratorOptions = Field(default_factory=GeneratorOptions)
     admet_moo: ADMETOptions = Field(default_factory=ADMETOptions)
     http: HTTPOptions = Field(default_factory=HTTPOptions)
-    output_dir: str = "results/example_run"
+    results_root: str = "results"
 
 
 class TargetFile(BaseModel):
@@ -95,11 +96,13 @@ class RunConfiguration:
     generator: GeneratorOptions
     admet_moo: ADMETOptions
     http: HTTPOptions
+    run_name: str
     output_dir: Path
 
 
 class ConfigurationLoader:
     _stage_name = re.compile(r"^[a-z][a-z0-9_-]*$")
+    _run_name = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
     @classmethod
     def load(
@@ -107,7 +110,9 @@ class ConfigurationLoader:
         pipeline_path: Path,
         services_path: Path,
         *,
-        output_override: Path | None = None,
+        run_name_override: str | None = None,
+        results_root_override: Path | None = None,
+        current_time: datetime | None = None,
     ) -> RunConfiguration:
         pipeline = PipelineFile.model_validate(cls._read_yaml(pipeline_path))
         service_file = ServicesFile.model_validate(cls._read_yaml(services_path))
@@ -124,8 +129,15 @@ class ConfigurationLoader:
                 f"services.yaml is missing required services: {', '.join(missing)}"
             )
 
-        configured_output = Path(
-            output_override or os.getenv("XFORGE_OUTPUT_DIR") or pipeline.output_dir
+        results_root = Path(
+            results_root_override
+            or os.getenv("XFORGE_RESULTS_ROOT")
+            or pipeline.results_root
+        )
+        run_name = cls._resolve_run_name(
+            target.name,
+            run_name_override or os.getenv("XFORGE_RUN_NAME"),
+            current_time or datetime.now(UTC),
         )
         return RunConfiguration(
             target=target,
@@ -137,8 +149,29 @@ class ConfigurationLoader:
             generator=pipeline.generator,
             admet_moo=pipeline.admet_moo,
             http=pipeline.http,
-            output_dir=configured_output,
+            run_name=run_name,
+            output_dir=results_root / run_name,
         )
+
+    @classmethod
+    def _resolve_run_name(
+        cls,
+        target_name: str,
+        requested_name: str | None,
+        current_time: datetime,
+    ) -> str:
+        if requested_name:
+            if not cls._run_name.fullmatch(requested_name):
+                raise ConfigurationError(
+                    "run name must start with a letter or number and contain only "
+                    "letters, numbers, dots, underscores, or hyphens"
+                )
+            return requested_name
+
+        target_slug = re.sub(r"[^a-z0-9]+", "-", target_name.lower()).strip("-")
+        target_slug = target_slug[:80].rstrip("-") or "run"
+        timestamp = current_time.astimezone(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+        return f"{target_slug}-{timestamp}"
 
     @classmethod
     def _parse_stages(

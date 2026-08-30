@@ -37,7 +37,7 @@ the iteration where the molecule was generated, and an append-only list of
 `ScoreRecord` objects. The orchestrator rejects service responses that remove
 or rewrite earlier scores.
 
-Each output directory contains:
+Each run subdirectory beneath `results/` contains:
 
 - `iteration_001.json`, etc.: seeds, all generated candidates, every filter's
   passed/rejected partition, ADMET evaluations, the Pareto front, and selected
@@ -56,15 +56,22 @@ The checked-in configuration performs three iterations with five generated
 candidates per iteration and two feedback leads:
 
 ```bash
+XFORGE_RUN_NAME=my-acetaminophen-run \
 docker compose up --build \
   --abort-on-container-exit \
   --exit-code-from orchestrator \
   orchestrator
 ```
 
-Results are written to `results/example_run/`. The orchestrator waits for both
-fixed services to report healthy and retries transient HTTP failures with
-exponential backoff.
+Results are written to `results/my-acetaminophen-run/`. `XFORGE_RUN_NAME` must
+be a single safe directory name containing letters, numbers, dots, underscores,
+or hyphens. When it is absent or empty, the orchestrator generates a unique,
+descriptive name from the target and UTC time, such as
+`acetaminophen-20260830T194631123456Z`.
+
+The orchestrator waits for both fixed services to report healthy and retries
+transient HTTP failures with exponential backoff. When running the CLI outside
+Compose, the equivalent options are `--run-name` and `--results-root`.
 
 ## Tests
 

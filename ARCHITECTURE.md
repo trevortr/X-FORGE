@@ -168,6 +168,10 @@ contains its input seeds, all generated candidates, passed and rejected
 populations from each filter, all ADMET-evaluated survivors, the Pareto front,
 and selected feedback molecules. A top-level `run.json` combines those
 checkpoints with run status/timestamps and a deduplicated molecule catalog.
+Each invocation writes these files beneath `results/<run-name>/`. The run name
+is supplied at launch or defaults to a filesystem-safe combination of the
+target name and a high-resolution UTC timestamp, so independent runs do not
+silently share one output directory.
 
 For a molecule ID seen again in a later iteration, the orchestrator starts from
 its latest known score history and appends new records. It rejects any service

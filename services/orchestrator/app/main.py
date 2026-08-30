@@ -25,7 +25,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("/config/services.yaml"),
     )
-    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument(
+        "--run-name",
+        help="subdirectory to create beneath the results root",
+    )
+    parser.add_argument(
+        "--results-root",
+        type=Path,
+        help="parent directory for run output (default: results)",
+    )
     return parser
 
 
@@ -33,7 +41,8 @@ def run_from_args(args: argparse.Namespace) -> int:
     configuration = ConfigurationLoader.load(
         args.pipeline,
         args.services,
-        output_override=args.output_dir,
+        run_name_override=args.run_name,
+        results_root_override=args.results_root,
     )
     writer = ResultWriter(configuration.output_dir)
     with ServiceClient(configuration.services, configuration.http) as client:
