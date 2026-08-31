@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>X-FORGE Run Explorer</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+    <script type="module" src="/static/app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div class="brand"><b>XF</b><span><strong>X-FORGE</strong>Run explorer</span></div>
+      <div class="run-control">
+        <label for="run-select">Result set</label>
+        <select id="run-select" disabled><option>Loading…</option></select>
+        <button id="refresh" type="button">Refresh</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="graph-card">
+        <div class="graph-heading">
+          <div><p class="kicker">Molecule lineage</p><h1 id="target">Select a run</h1></div>
+          <dl class="run-stats">
+            <div><dt>Status</dt><dd id="status">—</dd></div>
+            <div><dt>Iterations</dt><dd id="iterations">—</dd></div>
+            <div><dt>Visible</dt><dd id="visible">—</dd></div>
+          </dl>
+          <div class="graph-actions">
+            <label class="edge-toggle" for="show-all-edges">
+              <input id="show-all-edges" type="checkbox" disabled />
+              Show all edges
+            </label>
+            <button id="reveal-all" type="button" disabled>Reveal whole graph</button>
+            <button id="reset" type="button" disabled>Reset graph</button>
+          </div>
+        </div>
+
+        <div id="graph" class="graph" aria-live="polite">
+          <div class="empty"><strong>No graph loaded</strong><span>Choose a result set above.</span></div>
+        </div>
+
+        <div class="graph-footer">
+          <span><i class="root-key"></i> Initial hit</span>
+          <span><i class="child-key"></i> Has children</span>
+          <span><i class="leaf-key"></i> Leaf molecule</span>
+          <span class="instruction">Click to expand or collapse · Hover for details</span>
+        </div>
+      </section>
+
+      <aside id="inspector">
+        <p class="kicker">Molecule details</p>
+        <h2>Hover over a node</h2>
+        <p class="quiet">Provenance and score history will appear here.</p>
+      </aside>
+    </main>
+    <div id="message" role="status" aria-live="polite"></div>
+  </body>
+</html>

@@ -66,3 +66,27 @@ services:
       admet-moo:
         condition: service_healthy
     restart: "no"
+
+  visualizer:
+    build:
+      context: .
+      dockerfile: services/visualizer/Dockerfile
+    environment:
+      XFORGE_RESULTS_ROOT: /results
+    ports:
+      - "127.0.0.1:12010:12010"
+    volumes:
+      - ./results:/results:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12010/health', timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped

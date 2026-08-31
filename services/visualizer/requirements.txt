@@ -1,0 +1,4 @@
+fastapi==0.141.1
+matplotlib==3.11.1
+networkx==3.6.1
+uvicorn[standard]==0.52.4

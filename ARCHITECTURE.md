@@ -33,6 +33,13 @@ X-FORGE is a set of independently deployable services on a shared Docker Compose
 
 Each box is its own container, its own codebase, its own test suite, and its own Dockerfile. None of them import each other's code — the only thing they share is a schema library (`libs/schemas`) and an HTTP contract.
 
+The `visualizer` is outside the scientific pipeline call chain. It is a
+persistent read-only web service on port 12010 that mounts `results/`, lists run
+artifacts, builds lineage graphs with NetworkX, and renders them as interactive
+Matplotlib SVG. Keeping it out
+of `config/services.yaml` prevents a presentation concern from becoming a
+pipeline stage and leaves ports 12002–12004 available for the planned filters.
+
 ---
 
 ## 2. Service contract

@@ -64,6 +64,7 @@ X-FORGE is a set of independently containerized services on a shared Docker Comp
 | `filter-docking` | Scores/gates on docking pose and binding affinity | Configurable stage |
 | `admet-moo` | Scores ADMET properties, ranks via Pareto optimization | Fixed endpoint |
 | `orchestrator` | Reads config, sequences service calls, drives the iteration loop | Coordination layer |
+| `visualizer` | Interactively explores molecule lineage and score history | Read-only UI |
 
 Every filter service exposes the same contract, which is what makes them interchangeable:
 
@@ -111,7 +112,8 @@ x-forge/
 │   ├── filter-physchem/
 │   ├── filter-docking/
 │   ├── admet_moo/
-│   └── orchestrator/
+│   ├── orchestrator/
+│   └── visualizer/
 │       # each service has its own Dockerfile, dependencies, app/, and tests/
 ├── tests/
 │   └── integration/                 # cross-service, full-loop smoke test
@@ -143,6 +145,20 @@ the target name and UTC start time, such as
 
 To run against your own target, add a target config with a seed SMILES string, a PDB structure for the binding pocket, and pocket coordinates, then point `pipeline.yaml` at it.
 
+### Visualizing a run
+
+Start the persistent, read-only results viewer separately:
+
+```bash
+docker compose up --build -d visualizer
+```
+
+Open <http://localhost:12010>. Choose a run, click a molecule to reveal or hide
+its children, and hover over any node to inspect provenance and score metadata.
+Only the initial hits are shown initially; **Reveal whole graph** expands every
+lineage branch at once. The default view suppresses cycles and repeated-parent
+edges; select **Show all edges** to include them.
+
 ---
 
 ## Validation
@@ -157,7 +173,7 @@ Portfolio / demonstration project. Not intended for real drug discovery decision
 
 ### Current implementation
 
-The two fixed-endpoint services and the orchestration loop are runnable.
+The two fixed-endpoint services, orchestration loop, and run visualizer are runnable.
 `generator` accepts one or more hit
 SMILES through `POST /generate` and uses REINVENT4 Mol2Mol sampling to generate
 structurally related candidates. `admet-moo` accepts filtered candidates through
