@@ -21,13 +21,12 @@ X-FORGE is a set of independently deployable services on a shared Docker Compose
         ┌────────────────────────────────────────────────────────────────┐
         │                                                                  │
         ▼                                                                  ▼
-  ┌───────────┐       ┌───────────────────────────┐       ┌───────────┐
-  │ generator │──────▶│ binding                   │──────▶│ admet-moo │
-  │ (fixed)   │       │ RDKit → Meeko → Vina      │       │ (fixed)   │
-  └───────────┘       │ → efficiency → ProLIF     │       └─────┬─────┘
-        ▲             └───────────────────────────┘             │
-        │                                                       │
-        └────────── top-K Pareto-selected candidates ───────────┘
+  ┌───────────┐    ┌──────────────────┐    ┌───────────────────┐    ┌───────────┐
+  │ generator │───▶│ synthesizability │───▶│ binding           │───▶│ admet-moo │
+  │ (fixed)   │    │ RA + SA → p=-2   │    │ prep→Vina→ProLIF  │    │ (fixed)   │
+  └───────────┘    └──────────────────┘    └───────────────────┘    └─────┬─────┘
+        ▲                                                               │
+        └──────────── top-K Pareto-selected candidates ─────────────────┘
                                     (next iteration's seed set)
 ```
 
@@ -38,8 +37,8 @@ persistent read-only web service on port 12010 that mounts `results/`, lists run
 artifacts, builds lineage graphs with NetworkX, and renders them as interactive
 Matplotlib SVG. Keeping it out
 of `config/services.yaml` prevents a presentation concern from becoming a
-pipeline stage. Port 12004 is assigned to the binding filter; ports 12002 and
-12003 remain available for synthesizability and other future filters.
+pipeline stage. Port 12002 is assigned to synthesizability, 12004 to binding,
+and 12003 remains available for another future filter.
 
 ---
 
@@ -110,13 +109,18 @@ Two config files, deliberately kept separate:
 **`config/pipeline.yaml`** — what runs, in what order, with what thresholds:
 ```yaml
 pipeline:
+  - synthesizability:
+      power: -2
+      gate_midpoint: 0.5
+      gate_steepness: 12.0
+      min_activation: 0.5
   - binding:
-      receptor_pdbqt: /targets/cox2_4ph9/4ph9_chain_a_receptor.pdbqt
-      receptor_pdb: /targets/cox2_4ph9/4ph9_chain_a_prepared.pdb
-      box_center: [13.008, 23.487, 25.256]
-      box_size: [22.0, 22.0, 22.0]
+      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
+      box_center: [28.792, 30.186, 64.179]
+      box_size: [24.0, 24.0, 24.0]
       max_vina_score: -4.0
-iterations: 4
+iterations: 5
 candidates_per_iteration: 5
 top_k_feedback: 2
 ```
@@ -126,6 +130,7 @@ top_k_feedback: 2
 services:
   generator:        "http://generator:12000"
   admet_moo:        "http://admet-moo:12001"
+  synthesizability: "http://synthesizability:12002"
   binding:          "http://binding:12004"
 ```
 
@@ -143,6 +148,14 @@ analysis. These are deliberately one composite filter because exposing them as
 independently reorderable services would create invalid pipeline arrangements
 and force large pose artifacts through the shared molecule contract. The
 binding service retains each component metric in one auditable score record.
+
+The synthesizability stage normalizes RA-Score (higher is better) and SAscore
+(lower is better) to positive unit desirabilities. It aggregates them with a
+weighted generalized power mean fixed at `p = -2`, making a weak component
+dominate the result, then applies a configurable sigmoid gate. The raw metrics,
+normalized inputs, power mean, and activation are all retained in the score
+record. `/health` loads the checksummed model artifact, so Compose does not mark
+the service ready merely because the HTTP process started.
 
 An empty `pipeline: []` is a valid configuration — generation feeds directly into ADMET/MOO. This is the minimal-viable-loop mode and is exercised directly by the integration smoke test, since it's the cheapest possible full run of the system.
 
@@ -203,9 +216,9 @@ following IDs through the molecule catalog.
 **Decision**: Use RDKit and Meeko preparation, AutoDock Vina docking, and ProLIF interaction fingerprints as one composite binding filter rather than separate reorderable stages.
 **Reasoning**: Vina is free, well-documented, and fast enough to run per-iteration on a modest number of candidates without specialized infrastructure. Its accuracy is a known, acknowledged limitation relative to commercial tools — appropriate for a project whose goal is demonstrating pipeline architecture, not achieving state-of-the-art docking accuracy. This trade-off is stated explicitly rather than implied, per the README's validation section.
 
-### ADR-4: SAscore/SCscore over full retrosynthesis modeling
-**Decision**: Use RDKit-computable synthesizability heuristics rather than a retrosynthesis-planning model (e.g., AiZynthFinder).
-**Reasoning**: Heuristic scores are near-instant and require no additional infrastructure, keeping the synthesizability filter cheap relative to docking. A full retrosynthesis model is noted as a plausible future filter stage — and because filters are additive under this architecture, it can be added without touching any other service.
+### ADR-4: RA-Score + SAscore over online retrosynthesis planning
+**Decision**: Combine the pretrained RA-Score classifier and RDKit SAscore with a sigmoid-gated generalized power mean rather than run a full retrosynthesis planner per generated molecule.
+**Reasoning**: The two models provide complementary learned and structural heuristics in milliseconds, keeping this filter cheap enough to reject candidates before docking. Fixing the power at `p = -2` limits compensation: a strong value cannot fully hide a weak one. A full retrosynthesis model remains a plausible later filter stage and can be added without changing the orchestrator.
 
 ### ADR-5: Molecule score history is append-only and stage-agnostic
 **Decision**: Filters do not overwrite or delete prior stages' scores; every stage only appends its own `ScoreRecord`.
@@ -220,6 +233,7 @@ following IDs through the molecule catalog.
 ## 8. Known limitations / explicit non-goals
 
 - **Not validated for real drug discovery decisions.** Docking and ADMET scores here come from fast, open-source approximations, not the higher-cost validated methods used in industry (see README).
+- **RA-Score has an applicability domain.** Its upstream pretrained model was trained on ChEMBL examples labelled by one synthesis planner and is not a substitute for route planning or chemist review. The service pins and regression-tests the legacy XGBoost artifact, but compatibility does not establish prospective validity.
 - **No horizontal scaling of individual filter stages.** Each service runs as a single container; under real load, `binding` in particular would be the bottleneck and would benefit from being scaled independently — noted as a natural next step, not implemented here.
 - **No authentication/authorization between services.** Appropriate for a local demonstration project; would need to be added before any multi-tenant or externally-exposed deployment.
 - **Readiness, not just liveness, matters at startup.** `depends_on` in Compose only guarantees a container has started, not that its app is ready to serve requests (especially relevant for `binding` and `generator`). Every service exposes `/health`, and Compose uses `condition: service_healthy`; the orchestrator's HTTP client additionally retries with backoff on first contact with each service as defense-in-depth.

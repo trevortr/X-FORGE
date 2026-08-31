@@ -29,7 +29,7 @@ any rounding excess.
 
 An empty `pipeline: []` is valid and runs generator → ADMET-MOO directly. This
 remains useful for isolating the two fixed endpoints, although the checked-in
-example includes the binding filter.
+example includes synthesizability followed by binding.
 
 ## Molecule tracking
 
@@ -51,24 +51,25 @@ Each run subdirectory beneath `results/` contains:
 replaced with the completed result. A failed service call therefore leaves a
 diagnostic checkpoint rather than losing the run history.
 
-## Run the ibuprofen–COX-2 example
+## Run the sildenafil–PDE5 example
 
-The checked-in configuration performs four iterations with five requested
-candidates per iteration, real docking, and two feedback leads:
+The checked-in configuration performs five iterations with five requested
+candidates per iteration, RA-Score/SAscore gating, real 1TBF docking, and two
+feedback leads:
 
 ```bash
-XFORGE_RUN_NAME=my-ibuprofen-run \
+XFORGE_RUN_NAME=my-sildenafil-run \
 docker compose up --build \
   --abort-on-container-exit \
   --exit-code-from orchestrator \
   orchestrator
 ```
 
-Results are written to `results/my-ibuprofen-run/`. `XFORGE_RUN_NAME` must
+Results are written to `results/my-sildenafil-run/`. `XFORGE_RUN_NAME` must
 be a single safe directory name containing letters, numbers, dots, underscores,
 or hyphens. When it is absent or empty, the orchestrator generates a unique,
 descriptive name from the target and UTC time, such as
-`ibuprofen-cox2-20260830T194631123456Z`.
+`sildenafil-pde5-1tbf-20260830T194631123456Z`.
 
 The orchestrator waits for the configured services to report healthy and retries
 transient HTTP failures with exponential backoff. When running the CLI outside
@@ -76,10 +77,11 @@ Compose, the equivalent options are `--run-name` and `--results-root`.
 
 ## Tests
 
-The top-level integration tests cover both the three-iteration empty-filter
-mode and four complete ibuprofen generation → binding → ADMET iterations
-against deterministic HTTP fakes. They exercise the real YAML loader, service
-client, runner, lineage checks, and result writer:
+The top-level integration tests cover the three-iteration empty-filter mode,
+four ibuprofen generation → binding → ADMET iterations, and five sildenafil
+generation → synthesizability → binding → ADMET iterations against
+deterministic HTTP fakes. They exercise the real YAML loader, service client,
+runner, lineage checks, and result writer:
 
 ```bash
 python -m pip install -r services/orchestrator/requirements-dev.txt

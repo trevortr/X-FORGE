@@ -1,22 +1,31 @@
-target: targets/ibuprofen_cox2.yaml
+target: targets/sildenafil_pde5.yaml
 
 pipeline:
+  - synthesizability:
+      power: -2
+      rascore_weight: 1.0
+      sascore_weight: 1.0
+      sascore_best: 1.0
+      sascore_worst: 10.0
+      gate_midpoint: 0.5
+      gate_steepness: 12.0
+      min_activation: 0.5
   - binding:
-      receptor_pdbqt: /targets/cox2_4ph9/4ph9_chain_a_receptor.pdbqt
-      receptor_pdb: /targets/cox2_4ph9/4ph9_chain_a_prepared.pdb
-      box_center: [13.008, 23.487, 25.256]
-      box_size: [22.0, 22.0, 22.0]
+      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
+      box_center: [28.792, 30.186, 64.179]
+      box_size: [24.0, 24.0, 24.0]
       exhaustiveness: 2
       num_poses: 3
       energy_range: 3.0
       cpu: 1
       random_seed: 42
       max_vina_score: -4.0
-      min_ligand_efficiency: 0.1
-      min_lipe_proxy: -1.0
+      min_ligand_efficiency: 0.08
+      min_lipe_proxy: -2.0
       critical_interactions: []
 
-iterations: 4
+iterations: 5
 candidates_per_iteration: 5
 top_k_feedback: 2
 

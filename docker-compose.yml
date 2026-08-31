@@ -50,6 +50,27 @@ services:
       retries: 3
       start_period: 180s
 
+  synthesizability:
+    build:
+      context: .
+      dockerfile: services/synthesizability/Dockerfile
+      args:
+        RASCORE_REF: cb77db503ee5cbf0e8bb8963df6e5b76b3a94f06
+    ports:
+      - "127.0.0.1:12002:12002"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12002/health', timeout=10)
+      interval: 30s
+      timeout: 20s
+      retries: 3
+      start_period: 30s
+
   binding:
     build:
       context: .
@@ -85,6 +106,8 @@ services:
       generator:
         condition: service_healthy
       admet-moo:
+        condition: service_healthy
+      synthesizability:
         condition: service_healthy
       binding:
         condition: service_healthy
