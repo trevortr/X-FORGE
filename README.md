@@ -28,10 +28,11 @@ Drug discovery's hit-to-lead phase is fundamentally iterative: take a molecule k
 ```
 
 1. **Generate** — A generative model (e.g., genetic-algorithm mutation over SELFIES, or a fine-tuned RL model like REINVENT4) proposes structurally similar candidate molecules from the current seed set.
-2. **Filter** — Candidates pass through a configurable, ordered chain of filters. Out of the box:
-   - **Synthesizability** — reject molecules that would be impractical to synthesize (SAscore / SCscore).
-   - **Physicochemical rules** — reject molecules outside drug-like property bounds (Lipinski, Veber).
-   - **Docking** — score binding pose/affinity against the target pocket (AutoDock Vina).
+2. **Filter** — Candidates pass through a configurable, ordered chain of
+   filters. The implemented **binding** filter prepares 3D ligands, docks them
+   with AutoDock Vina, calculates efficiency metrics, and checks pose
+   interactions with ProLIF. Synthesizability and additional physicochemical
+   filters are planned extensions.
 
    Filters can be added, removed, or reordered via config — none of them need to know what ran before or after them.
 3. **ADMET + Multi-Objective Optimization** — Surviving candidates are scored across ADMET properties (absorption, distribution, metabolism, excretion, toxicity) and ranked using Pareto-based multi-objective optimization (non-dominated sorting), since these objectives routinely trade off against each other.
@@ -61,7 +62,7 @@ X-FORGE is a set of independently containerized services on a shared Docker Comp
 | `generator` | Proposes candidate molecules from seed SMILES | Fixed endpoint |
 | `filter-synthesizability` | Scores/gates on synthetic accessibility | Configurable stage |
 | `filter-physchem` | Scores/gates on drug-like physicochemical properties | Configurable stage |
-| `filter-docking` | Scores/gates on docking pose and binding affinity | Configurable stage |
+| `binding` | RDKit/Meeko preparation, Vina docking, efficiency metrics, and ProLIF pose gates | Configurable stage |
 | `admet-moo` | Scores ADMET properties, ranks via Pareto optimization | Fixed endpoint |
 | `orchestrator` | Reads config, sequences service calls, drives the iteration loop | Coordination layer |
 | `visualizer` | Interactively explores molecule lineage and score history | Read-only UI |
@@ -81,13 +82,12 @@ The order, presence, and thresholds of filter stages are entirely defined in `co
 
 ```yaml
 pipeline:
-  - synthesizability:
-      threshold: 4.0
-  - physchem:
-      rules: lipinski
-  - docking:
-      target_pdb: "6LU7"
-      score_threshold: -8.0
+  - binding:
+      receptor_pdbqt: /targets/cox2_4ph9/4ph9_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/cox2_4ph9/4ph9_chain_a_prepared.pdb
+      box_center: [13.008, 23.487, 25.256]
+      box_size: [22.0, 22.0, 22.0]
+      max_vina_score: -4.0
 ```
 
 A separate `config/services.yaml` maps each named stage to its network location, keeping "what runs, in what order, with what thresholds" cleanly separate from "where does each stage actually live" — a seam that also means the same pipeline config could target a different deployment (e.g., Kubernetes) by swapping only the service registry.
@@ -110,7 +110,7 @@ x-forge/
 │   ├── generator/
 │   ├── filter-synthesizability/
 │   ├── filter-physchem/
-│   ├── filter-docking/
+│   ├── binding/
 │   ├── admet_moo/
 │   ├── orchestrator/
 │   └── visualizer/
@@ -129,7 +129,7 @@ Unit tests live alongside the service they test; only integration tests that spa
 ## Running it
 
 ```bash
-XFORGE_RUN_NAME=my-acetaminophen-run \
+XFORGE_RUN_NAME=my-ibuprofen-run \
 docker compose up --build \
   --abort-on-container-exit \
   --exit-code-from orchestrator \
@@ -141,7 +141,7 @@ This builds and starts every service, then the orchestrator runs the configured 
 `XFORGE_RUN_NAME` selects the subdirectory beneath `results/`. It may contain
 letters, numbers, dots, underscores, and hyphens. Omit it to automatically use
 the target name and UTC start time, such as
-`results/acetaminophen-20260830T194631123456Z/`.
+`results/ibuprofen-cox2-20260830T194631123456Z/`.
 
 To run against your own target, add a target config with a seed SMILES string, a PDB structure for the binding pocket, and pocket coordinates, then point `pipeline.yaml` at it.
 
@@ -173,7 +173,8 @@ Portfolio / demonstration project. Not intended for real drug discovery decision
 
 ### Current implementation
 
-The two fixed-endpoint services, orchestration loop, and run visualizer are runnable.
+The two fixed-endpoint services, composite binding filter, orchestration loop,
+and run visualizer are runnable.
 `generator` accepts one or more hit
 SMILES through `POST /generate` and uses REINVENT4 Mol2Mol sampling to generate
 structurally related candidates. `admet-moo` accepts filtered candidates through
@@ -181,6 +182,8 @@ structurally related candidates. `admet-moo` accepts filtered candidates through
 the Pareto front with pymoo, and supports knee-point, desirability/geometric
 mean, or hypervolume-contribution lead selection. `orchestrator` reads the YAML
 configuration, drives the iterative feedback loop, and writes auditable run and
-per-iteration results. Filter services remain planned work, so the checked-in
-three-iteration acetaminophen example uses the valid empty-filter-chain mode.
+per-iteration results. `binding` performs RDKit/Meeko 3D preparation, Vina
+docking, ligand-efficiency and LipE-proxy calculation, and ProLIF interaction
+fingerprinting. The checked-in example runs four feedback iterations from
+S-ibuprofen against the prepared 4PH9 COX-2 target.
 See the service READMEs for API and runtime details.

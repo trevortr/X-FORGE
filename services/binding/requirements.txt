@@ -1,0 +1,6 @@
+fastapi==0.141.1
+meeko==0.7.1
+prolif==2.2.1
+rdkit==2025.9.3
+vina==1.2.7
+uvicorn[standard]==0.52.4

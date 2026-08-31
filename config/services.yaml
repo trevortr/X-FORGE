@@ -1,3 +1,4 @@
 services:
   generator: "http://generator:12000"
   admet_moo: "http://admet-moo:12001"
+  binding: "http://binding:12004"

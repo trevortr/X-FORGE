@@ -1,0 +1,9 @@
+name: ibuprofen-cox2
+seeds:
+  - smiles: "CC(C)Cc1ccc(cc1)[C@@H](C)C(=O)O"
+
+target_provenance:
+  pdb_id: 4PH9
+  protein: murine cyclooxygenase-2
+  bound_ligand: S-ibuprofen
+  binding_site_center: [13.008, 23.487, 25.256]

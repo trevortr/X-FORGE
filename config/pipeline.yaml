@@ -1,10 +1,22 @@
-target: targets/example_target.yaml
+target: targets/ibuprofen_cox2.yaml
 
-# An empty filter chain is the first complete vertical slice. Add named filter
-# services here as they are implemented; the orchestrator calls them in order.
-pipeline: []
+pipeline:
+  - binding:
+      receptor_pdbqt: /targets/cox2_4ph9/4ph9_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/cox2_4ph9/4ph9_chain_a_prepared.pdb
+      box_center: [13.008, 23.487, 25.256]
+      box_size: [22.0, 22.0, 22.0]
+      exhaustiveness: 2
+      num_poses: 3
+      energy_range: 3.0
+      cpu: 1
+      random_seed: 42
+      max_vina_score: -4.0
+      min_ligand_efficiency: 0.1
+      min_lipe_proxy: -1.0
+      critical_interactions: []
 
-iterations: 3
+iterations: 4
 candidates_per_iteration: 5
 top_k_feedback: 2
 

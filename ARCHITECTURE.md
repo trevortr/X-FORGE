@@ -21,13 +21,13 @@ X-FORGE is a set of independently deployable services on a shared Docker Compose
         ┌────────────────────────────────────────────────────────────────┐
         │                                                                  │
         ▼                                                                  ▼
-  ┌───────────┐   ┌────────────────┐   ┌──────────────┐   ┌────────────┐   ┌───────────┐
-  │ generator │──▶│ filter-synth   │──▶│ filter-       │──▶│ filter-    │──▶│ admet-moo │
-  │ (fixed)   │   │ (configurable) │   │ physchem      │   │ docking    │   │ (fixed)   │
-  └───────────┘   └────────────────┘   │ (configurable)│   │(configurable)│  └─────┬─────┘
-        ▲                                └──────────────┘   └────────────┘         │
-        │                                                                          │
-        └──────────────────── top-K Pareto-selected candidates ────────────────────┘
+  ┌───────────┐       ┌───────────────────────────┐       ┌───────────┐
+  │ generator │──────▶│ binding                   │──────▶│ admet-moo │
+  │ (fixed)   │       │ RDKit → Meeko → Vina      │       │ (fixed)   │
+  └───────────┘       │ → efficiency → ProLIF     │       └─────┬─────┘
+        ▲             └───────────────────────────┘             │
+        │                                                       │
+        └────────── top-K Pareto-selected candidates ───────────┘
                                     (next iteration's seed set)
 ```
 
@@ -38,7 +38,8 @@ persistent read-only web service on port 12010 that mounts `results/`, lists run
 artifacts, builds lineage graphs with NetworkX, and renders them as interactive
 Matplotlib SVG. Keeping it out
 of `config/services.yaml` prevents a presentation concern from becoming a
-pipeline stage and leaves ports 12002–12004 available for the planned filters.
+pipeline stage. Port 12004 is assigned to the binding filter; ports 12002 and
+12003 remain available for synthesizability and other future filters.
 
 ---
 
@@ -109,16 +110,15 @@ Two config files, deliberately kept separate:
 **`config/pipeline.yaml`** — what runs, in what order, with what thresholds:
 ```yaml
 pipeline:
-  - synthesizability:
-      threshold: 4.0
-  - physchem:
-      rules: lipinski
-  - docking:
-      target_pdb: "6LU7"
-      score_threshold: -8.0
-iterations: 5
-candidates_per_iteration: 100
-top_k_feedback: 10
+  - binding:
+      receptor_pdbqt: /targets/cox2_4ph9/4ph9_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/cox2_4ph9/4ph9_chain_a_prepared.pdb
+      box_center: [13.008, 23.487, 25.256]
+      box_size: [22.0, 22.0, 22.0]
+      max_vina_score: -4.0
+iterations: 4
+candidates_per_iteration: 5
+top_k_feedback: 2
 ```
 
 **`config/services.yaml`** — where each named stage actually lives:
@@ -126,9 +126,7 @@ top_k_feedback: 10
 services:
   generator:        "http://generator:12000"
   admet_moo:        "http://admet-moo:12001"
-  synthesizability: "http://filter-synthesizability:12002"
-  physchem:         "http://filter-physchem:12003"
-  docking:          "http://filter-docking:12004"
+  binding:          "http://binding:12004"
 ```
 
 **Why two files instead of one**: `pipeline.yaml` answers a scientific/experimental question (what filters, what order, what thresholds) and is what you'd change between experiments. `services.yaml` answers a deployment question (what network location serves this stage) and is what you'd change between environments (local Compose vs. a future Kubernetes deployment). Conflating them would mean every environment change requires touching experiment config, and vice versa.
@@ -137,16 +135,14 @@ services:
 
 ## 5. Pipeline construction and stage dependencies
 
-The orchestrator's `pipeline_builder.py` reads `pipeline.yaml`, resolves each named stage against `services.yaml`, and constructs an ordered call sequence — failing fast at build time (not mid-run) if a stage is referenced in one file but missing from the other.
+The orchestrator's `ConfigurationLoader` reads `pipeline.yaml`, resolves each named stage against `services.yaml`, and constructs an ordered call sequence — failing fast at build time (not mid-run) if a stage is referenced in one file but missing from the other.
 
-Some filters have implicit prerequisites — e.g., a docking filter needs 3D conformers generated first, which may not have happened yet if docking is placed early in the chain. Each filter declares what it needs:
-
-```yaml
-filter-docking:
-  requires: ["conformer_3d"]
-```
-
-If a required precondition isn't satisfied by an earlier stage in the configured order, the pipeline builder raises a configuration error before any service is called, rather than letting the docking service fail on malformed input mid-run. This is deliberately a build-time check, not a runtime one — reordering the pipeline into an invalid configuration should be caught by validation, not discovered from a stack trace three iterations into a run.
+The binding operation has an internal dependency chain: RDKit 3D preparation,
+Meeko parameterization, Vina docking, efficiency calculation, then ProLIF pose
+analysis. These are deliberately one composite filter because exposing them as
+independently reorderable services would create invalid pipeline arrangements
+and force large pose artifacts through the shared molecule contract. The
+binding service retains each component metric in one auditable score record.
 
 An empty `pipeline: []` is a valid configuration — generation feeds directly into ADMET/MOO. This is the minimal-viable-loop mode and is exercised directly by the integration smoke test, since it's the cheapest possible full run of the system.
 
@@ -200,11 +196,11 @@ following IDs through the molecule catalog.
 **Reasoning**: At this system's scale (tens to low-hundreds of molecules per iteration, single-machine Compose deployment), the queue's benefits — decoupled producers/consumers, backpressure handling, horizontal fan-out — aren't load-bearing, but its costs (broker to run and monitor, harder to debug, harder to demo) are real. REST is directly curl-able during development and easy to represent in a single sequence diagram. A queue-based design is documented here as a natural extension point if the project were scaled to production throughput.
 
 ### ADR-2: Compose service-name networking over an external CLI orchestrator
-**Decision**: The orchestrator runs inside the Compose network and calls other services by hostname (`http://filter-docking:12004`), rather than running as an external client hitting `localhost:<port>`.
+**Decision**: The orchestrator runs inside the Compose network and calls other services by hostname (`http://binding:12004`), rather than running as an external client hitting `localhost:<port>`.
 **Reasoning**: This is the architecture that actually resembles a real microservices deployment, and it removes the host-port-mapping bookkeeping from the orchestrator entirely — it only ever needs to know Compose service names via `services.yaml`. The trade-off is a slightly less convenient debug loop (you can't as trivially attach a debugger to the orchestrator process), mitigated by giving every service a mapped host port anyway for manual `curl` access during development.
 
 ### ADR-3: AutoDock Vina over higher-fidelity docking tools
-**Decision**: Use AutoDock Vina for the docking filter rather than a commercial or ML-based docking method (e.g., Glide, DiffDock).
+**Decision**: Use RDKit and Meeko preparation, AutoDock Vina docking, and ProLIF interaction fingerprints as one composite binding filter rather than separate reorderable stages.
 **Reasoning**: Vina is free, well-documented, and fast enough to run per-iteration on a modest number of candidates without specialized infrastructure. Its accuracy is a known, acknowledged limitation relative to commercial tools — appropriate for a project whose goal is demonstrating pipeline architecture, not achieving state-of-the-art docking accuracy. This trade-off is stated explicitly rather than implied, per the README's validation section.
 
 ### ADR-4: SAscore/SCscore over full retrosynthesis modeling
@@ -224,6 +220,6 @@ following IDs through the molecule catalog.
 ## 8. Known limitations / explicit non-goals
 
 - **Not validated for real drug discovery decisions.** Docking and ADMET scores here come from fast, open-source approximations, not the higher-cost validated methods used in industry (see README).
-- **No horizontal scaling of individual filter stages.** Each service runs as a single container; under real load, `filter-docking` in particular would be the bottleneck and would benefit from being scaled independently — noted as a natural next step, not implemented here.
+- **No horizontal scaling of individual filter stages.** Each service runs as a single container; under real load, `binding` in particular would be the bottleneck and would benefit from being scaled independently — noted as a natural next step, not implemented here.
 - **No authentication/authorization between services.** Appropriate for a local demonstration project; would need to be added before any multi-tenant or externally-exposed deployment.
-- **Readiness, not just liveness, matters at startup.** `depends_on` in Compose only guarantees a container has started, not that its app is ready to serve requests (especially relevant for `filter-docking`, which loads target structures, and `generator`, which may load model weights). Every service exposes `/health`, and Compose uses `condition: service_healthy`; the orchestrator's HTTP client additionally retries with backoff on first contact with each service as defense-in-depth.
+- **Readiness, not just liveness, matters at startup.** `depends_on` in Compose only guarantees a container has started, not that its app is ready to serve requests (especially relevant for `binding` and `generator`). Every service exposes `/health`, and Compose uses `condition: service_healthy`; the orchestrator's HTTP client additionally retries with backoff on first contact with each service as defense-in-depth.
