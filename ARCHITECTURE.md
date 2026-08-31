@@ -1,116 +1,75 @@
 # X-FORGE Architecture
 
-This document describes how X-FORGE is put together: the service boundaries, the data model that flows between them, the network topology, and the reasoning behind the major design decisions. The README describes *what* X-FORGE does; this document describes *how* and *why*.
-
----
+This document describes the implemented X-FORGE service boundaries, contracts, data flow, deployment lifecycle, and major design decisions. The top-level [README](README.md) is the operational introduction.
 
 ## 1. System overview
 
-X-FORGE is a set of independently deployable services on a shared Docker Compose network, coordinated by a single orchestrator. There are two **fixed endpoints** of the pipeline — the generator and the ADMET/multi-objective optimization (MOO) step — and an arbitrary, config-defined chain of **filter stages** in between.
+X-FORGE is a synchronous feedback pipeline running on a private Docker Compose network. A one-shot orchestrator calls resident scientific APIs in sequence and writes durable checkpoints to a shared results directory.
 
-```
-                         ┌────────────────────────────────────────────┐
-                         │              orchestrator                   │
-                         │  reads config/pipeline.yaml                 │
-                         │  reads config/services.yaml                 │
-                         │  drives the n-iteration loop                │
-                         └───────┬──────────────────────────┬─────────┘
-                                 │                            │
-                    calls services by hostname, in configured order
-                                 │                            │
-        ┌────────────────────────────────────────────────────────────────┐
-        │                                                                  │
-        ▼                                                                  ▼
-  ┌───────────┐    ┌──────────────────┐    ┌───────────────────┐    ┌───────────┐
-  │ generator │───▶│ synthesizability │───▶│ binding           │───▶│ admet-moo │
-  │ (fixed)   │    │ RA + SA → p=-2   │    │ prep→Vina→ProLIF  │    │ (fixed)   │
-  └───────────┘    └──────────────────┘    └───────────────────┘    └─────┬─────┘
-        ▲                                                               │
-        └──────────── top-K Pareto-selected candidates ─────────────────┘
-                                    (next iteration's seed set)
-```
+```text
+                                  configuration
+                        pipeline.yaml + services.yaml
+                                     │
+                                     ▼
+                            ┌─────────────────┐
+                            │  orchestrator   │
+                            │ one process/run │
+                            └────────┬────────┘
+                                     │ HTTP by Compose hostname
+                                     ▼
+┌───────────┐   ┌──────────────────┐   ┌──────────────────┐   ┌───────────┐
+│ generator │──▶│ synthesizability │──▶│     binding      │──▶│ admet-moo │
+│ REINVENT4 │   │ RA + SA, p = -2 │   │ prep/Vina/ProLIF │   │ Pareto MOO │
+└─────▲─────┘   └──────────────────┘   └──────────────────┘   └─────┬─────┘
+      └──────────────── selected feedback molecules ─────────────────┘
 
-Each box is its own container, its own codebase, its own test suite, and its own Dockerfile. None of them import each other's code — the only thing they share is a schema library (`libs/schemas`) and an HTTP contract.
-
-The `visualizer` is outside the scientific pipeline call chain. It is a
-persistent read-only web service on port 12010 that mounts `results/`, lists run
-artifacts, builds lineage graphs with NetworkX, and renders them as interactive
-Matplotlib SVG. Keeping it out
-of `config/services.yaml` prevents a presentation concern from becoming a
-pipeline stage. Port 12002 is assigned to synthesizability, 12004 to binding,
-and 12003 remains available for another future filter.
-
----
-
-## 2. Service contract
-
-Every filter service — regardless of what it actually computes — exposes the same two endpoints:
-
-```
-POST /score
-  request:  { "molecules": [Molecule, ...], "parameters": {...} }
-  response: { "molecules": [Molecule, ...] }   # same molecules, annotated with this stage's fields
-
-POST /filter
-  request:  { "molecules": [Molecule, ...], "parameters": {...} }
-  response: { "passed": [Molecule, ...], "rejected": [Molecule, ...] }
-
-GET /health
-  response: { "status": "ok" }
+              results/<run-name>/*.json
+                         │
+                         ▼
+              ┌────────────────────┐
+              │     visualizer     │
+              │ read-only web app  │
+              └────────────────────┘
 ```
 
-`generator` and `admet-moo` deviate slightly since they aren't gating stages:
+No service imports another service's implementation. Pipeline envelopes and filter contracts are defined in `libs/schemas` and copied into the images that use them; generator and ADMET-MOO retain service-specific request and response models while preserving the shared molecule fields over HTTP.
 
-```
-POST /generate
-  request:  { "seeds": [Molecule, ...], "n_candidates_per_seed": int }
-  response: { "molecules": [Molecule, ...] }
+### Deployment topology
 
-POST /optimize
-  request:  { "molecules": [Molecule, ...], "top_k": int }
-  response: { "selected": [Molecule, ...], "pareto_front": [Molecule, ...] }
-```
+| Service | Compose hostname | Container/host port | Lifecycle |
+|---|---|---:|---|
+| Generator | `generator` | `12000` | Resident API |
+| ADMET-MOO | `admet-moo` | `12001` | Resident API |
+| Synthesizability | `synthesizability` | `12002` | Resident API |
+| Binding | `binding` | `12004` | Resident API |
+| Orchestrator | `orchestrator` | None | One-shot job |
+| Visualizer | `visualizer` | `12010` | Resident read-only UI |
 
-**Why separate `/score` from `/filter`** rather than one endpoint that scores-and-gates: you often want a stage's score computed and recorded even for molecules that will be rejected by an earlier stage's threshold, or for post-hoc analysis of where thresholds should be set. Keeping them separate means the orchestrator decides when to gate, and every score is preserved in the molecule's record regardless of pass/fail — nothing is silently discarded.
+Host ports bind only to `127.0.0.1`; internal calls use the Compose DNS names in `services.yaml`. Port `12003` is unassigned. The visualizer is intentionally absent from the scientific service registry.
 
-**Why this uniformity matters**: it's what makes a filter genuinely swappable at the network level. The orchestrator's HTTP client doesn't have per-filter-type logic — it calls `/score` and `/filter` on whatever hostname the config points it to. Adding a new filter type means writing a new service that honors this contract and adding one line to `services.yaml`; the orchestrator's code does not change.
+Compose waits for the four scientific APIs to report healthy before launching the orchestrator. Generator health verifies the prior and REINVENT runtime, ADMET health loads its predictor, and synthesizability health loads the real RA-Score artifact. Binding health currently verifies its installed scientific stack; target paths are validated when a scoring request creates a docking context.
 
----
+The sample Compose manifest declares all four APIs as orchestrator dependencies. Pipeline configuration controls which filter APIs are called, although an unused declared filter container may still start.
 
-## 3. The `Molecule` object
+## 2. Configuration model
 
-Defined once in `libs/schemas`, imported by every service. This is the single most important shared artifact in the system — schema drift here would silently break the pipeline.
+Configuration separates experimental intent from deployment location:
 
-```python
-class ScoreRecord(BaseModel):
-    stage: str                      # e.g. "docking", "physchem"
-    values: dict[str, float]        # e.g. {"binding_affinity": -8.4}
-    passed: bool | None             # None if this stage only scores, doesn't gate
-    computed_at_iteration: int
+- `config/pipeline.yaml` defines the target, filter order and parameters, iteration budget, generator options, ADMET decision policy, and HTTP retry behavior.
+- `config/services.yaml` maps logical service names to network URLs.
+- `config/targets/*.yaml` defines a target name and one or more starting molecules.
+- `targets/<target-id>/` contains prepared receptor and docking-box assets mounted read-only into the binding container.
 
-class Molecule(BaseModel):
-    smiles: str
-    id: str                         # stable hash of canonical SMILES
-    parent_id: str | None           # provenance: which molecule it was derived from
-    iteration: int                  # which loop iteration produced it
-    scores: list[ScoreRecord]       # full history, append-only across the pipeline
-```
+The current pipeline shape is:
 
-**Why molecules carry their full score history, not just current-stage output**: since the filter chain is reorderable and extensible, no stage can assume what ran before it beyond what it explicitly declares as a dependency (see §5). Carrying the full history also means the entire run is auditable after the fact — you can answer "which stage kills the most candidates" or "did iteration 3's survivors actually improve on iteration 1's Pareto front" without rerunning anything, since every score from every stage of every iteration is preserved on the molecule record itself.
-
-**Why an append-only list rather than a mutable dict keyed by stage name**: if a filter runs more than once across iterations (which it will, every loop iteration), a dict would overwrite prior iterations' scores. The list plus `computed_at_iteration` preserves the full trajectory of each molecule's scores across the entire run — useful for the validation analysis described in the README (checking that the Pareto front actually improves iteration over iteration).
-
----
-
-## 4. Configuration
-
-Two config files, deliberately kept separate:
-
-**`config/pipeline.yaml`** — what runs, in what order, with what thresholds:
 ```yaml
+target: targets/sildenafil_pde5.yaml
+
 pipeline:
   - synthesizability:
       power: -2
+      rascore_weight: 1.0
+      sascore_weight: 1.0
       gate_midpoint: 0.5
       gate_steepness: 12.0
       min_activation: 0.5
@@ -119,121 +78,257 @@ pipeline:
       receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
       box_center: [28.792, 30.186, 64.179]
       box_size: [24.0, 24.0, 24.0]
-      max_vina_score: -4.0
+
 iterations: 5
 candidates_per_iteration: 5
 top_k_feedback: 2
+
+admet_moo:
+  properties: null
+  selection:
+    method: desirability
+    weights:
+      herg_blocking: 2.0
 ```
 
-**`config/services.yaml`** — where each named stage actually lives:
-```yaml
-services:
-  generator:        "http://generator:12000"
-  admet_moo:        "http://admet-moo:12001"
-  synthesizability: "http://synthesizability:12002"
-  binding:          "http://binding:12004"
+At orchestrator startup, Pydantic validates both YAML files, resolves the target relative to `config/`, verifies that every configured stage has a service URL, and rejects malformed stage or run names. An empty `pipeline: []` is valid and connects generation directly to ADMET-MOO.
+
+## 3. HTTP contracts
+
+### Filter contract
+
+Synthesizability and binding expose the same two-stage interface:
+
+```text
+POST /score
+  request:  {molecules: [Molecule, ...], parameters: {...}}
+  response: {molecules: [Molecule with one appended ScoreRecord, ...]}
+
+POST /filter
+  request:  {molecules: [scored Molecule, ...], parameters: {...}}
+  response: {passed: [...], rejected: [...]}
 ```
 
-**Why two files instead of one**: `pipeline.yaml` answers a scientific/experimental question (what filters, what order, what thresholds) and is what you'd change between experiments. `services.yaml` answers a deployment question (what network location serves this stage) and is what you'd change between environments (local Compose vs. a future Kubernetes deployment). Conflating them would mean every environment change requires touching experiment config, and vice versa.
+`/score` calculates and annotates; `/filter` only partitions. The latter requires the molecule's latest score record to belong to that service, preventing stale or unscored data from being gated. Keeping the operations separate lets a score be retained before the molecule is removed from the active population and lets thresholds be re-examined without conflating calculation with orchestration.
 
----
+### Generator contract
 
-## 5. Pipeline construction and stage dependencies
+```text
+POST /generate
+  request:
+    seeds, n_candidates_per_seed, strategy, temperature, random_seed
+  response:
+    molecules, requested, generated, model
+```
 
-The orchestrator's `ConfigurationLoader` reads `pipeline.yaml`, resolves each named stage against `services.yaml`, and constructs an ordered call sequence — failing fast at build time (not mid-run) if a stage is referenced in one file but missing from the other.
+Each generated item includes its REINVENT-produced SMILES, stable ID, immediate parent SMILES/ID, Tanimoto similarity, and REINVENT negative log-likelihood when available.
 
-The binding operation has an internal dependency chain: RDKit 3D preparation,
-Meeko parameterization, Vina docking, efficiency calculation, then ProLIF pose
-analysis. These are deliberately one composite filter because exposing them as
-independently reorderable services would create invalid pipeline arrangements
-and force large pose artifacts through the shared molecule contract. The
-binding service retains each component metric in one auditable score record.
+### ADMET-MOO contract
 
-The synthesizability stage normalizes RA-Score (higher is better) and SAscore
-(lower is better) to positive unit desirabilities. It aggregates them with a
-weighted generalized power mean fixed at `p = -2`, making a weak component
-dominate the result, then applies a configurable sigmoid gate. The raw metrics,
-normalized inputs, power mean, and activation are all retained in the score
-record. `/health` loads the checksummed model artifact, so Compose does not mark
-the service ready merely because the HTTP process started.
+```text
+GET  /properties
+POST /optimize
+  request:
+    molecules, top_k, optional property keys, selection options
+  response:
+    all evaluated molecules, selected molecules, Pareto front,
+    selected method, and property metadata
+```
 
-An empty `pipeline: []` is a valid configuration — generation feeds directly into ADMET/MOO. This is the minimal-viable-loop mode and is exercised directly by the integration smoke test, since it's the cheapest possible full run of the system.
+Evaluated molecules contain raw predictions, minimization-form objectives, unit desirabilities, Pareto rank, selection score, and selected state. The service appends one `admet_moo` score record without deleting existing filter history.
 
----
+Scientific APIs expose `GET /live` for process liveness and `GET /health` for readiness. The visualizer exposes `GET /health` plus read-only run and graph APIs.
 
-## 6. The feedback loop
+## 4. Molecule and provenance model
 
-Each iteration:
+The core schema is:
 
-1. `generator` produces `candidates_per_iteration` molecules from the current seed set.
-2. Candidates flow through the configured filter chain; each stage scores and gates.
-3. Survivors are sent to `admet-moo`, which predicts ADMET properties with ADMET-AI and performs non-dominated (Pareto) sorting with pymoo.
-4. The human-selected decision method — knee point, desirability functions with weighted geometric mean, or hypervolume contribution — ranks only the Pareto-front molecules. The top `top_k_feedback` become the next iteration's seed set.
-5. Repeat for the configured number of iterations, or until a stopping criterion is met (e.g., Pareto front stops improving).
+```python
+class ScoreRecord(BaseModel):
+    stage: str
+    values: dict[str, float]
+    passed: bool | None
+    computed_at_iteration: int
 
-The population setting is a total per-iteration budget even though the
-generator API samples per seed. The orchestrator divides the budget across the
-current seed set, rounds up, and trims any excess returned candidates. It also
-adds a `generator` score record containing REINVENT's Tanimoto/NLL values before
-the molecules enter the filter chain.
+class Molecule(BaseModel):
+    smiles: str
+    id: str | None
+    parent_id: str | None
+    iteration: int
+    scores: list[ScoreRecord]
+```
 
-### Run artifacts and lineage
+The envelope permits extra service-specific metadata such as generator model details, binding interactions, synthesizability diagnostics, ADMET objectives, and selection state.
 
-The orchestrator retains more than the final leads. Every iteration checkpoint
-contains its input seeds, all generated candidates, passed and rejected
-populations from each filter, all ADMET-evaluated survivors, the Pareto front,
-and selected feedback molecules. A top-level `run.json` combines those
-checkpoints with run status/timestamps and a deduplicated molecule catalog.
-Each invocation writes these files beneath `results/<run-name>/`. The run name
-is supplied at launch or defaults to a filesystem-safe combination of the
-target name and a high-resolution UTC timestamp, so independent runs do not
-silently share one output directory.
+IDs are the first 16 hexadecimal characters of SHA-256 over the stored SMILES. The shared schema only trims and validates a supplied one-line SMILES; it does not canonicalize it. REINVENT canonicalizes input representations during sampling, but X-FORGE hashes the exact candidate representation returned in REINVENT's output, so callers and future generators are responsible for consistent SMILES normalization.
 
-For a molecule ID seen again in a later iteration, the orchestrator starts from
-its latest known score history and appends new records. It rejects any service
-response that changes the input population during scoring, returns an invalid
-filter partition, or rewrites the existing score prefix. Children keep only
-their immediate `parent_id`; the complete ancestry remains reconstructable by
-following IDs through the molecule catalog.
+Each generated snapshot stores its immediate `parent_id`. Repeated generation of the same molecular ID can produce extra parent edges across iteration artifacts; the top-level ledger keeps the latest append-only snapshot, while iteration checkpoints retain the historical occurrences needed to reconstruct the fuller graph.
 
-**Why Pareto selection rather than a single scalarized reward**: ADMET objectives routinely trade off against each other (e.g., improving metabolic stability can worsen solubility), and collapsing them into one weighted score requires committing to relative weights up front, which is exactly the kind of judgment call that's better made by inspecting a front than baked into a formula. Non-dominated sorting (NSGA-II-style) surfaces the actual trade-off surface instead of a single number.
+Score history is append-only because a mutable dictionary keyed by stage would discard repeated observations. The orchestrator enforces this invariant and also rejects service responses that:
 
-**Why make Pareto-front decision-making configurable**: the front separates objective trade-offs from the human preference used to pick leads. Knee-point selection favors high-tradeoff compromises, desirability functions encode explicit endpoint preferences, and hypervolume contribution favors candidates that preserve the largest unique portion of objective space. This lets an experiment change its decision policy without changing prediction or Pareto-ranking code.
+- change the population during `/score`
+- return an incomplete or overlapping filter partition
+- reorder or rewrite the existing score prefix
+- return duplicate generated IDs or an unknown parent ID
 
----
+## 5. Scientific services
 
-## 7. Architecture Decision Records
+### 5.1 Generator
 
-### ADR-1: REST over a message queue for inter-service communication
-**Decision**: Services communicate via synchronous HTTP/REST, not an async queue (Celery/RabbitMQ/etc.).
-**Reasoning**: At this system's scale (tens to low-hundreds of molecules per iteration, single-machine Compose deployment), the queue's benefits — decoupled producers/consumers, backpressure handling, horizontal fan-out — aren't load-bearing, but its costs (broker to run and monitor, harder to debug, harder to demo) are real. REST is directly curl-able during development and easy to represent in a single sequence diagram. A queue-based design is documented here as a natural extension point if the project were scaled to production throughput.
+The generator wraps REINVENT4 v4.8 Mol2Mol sampling. The model prior is mounted at runtime from `models/reinvent/mol2mol_medium_similarity.prior`, allowing the large artifact to remain outside version control. Requests support multinomial or beam-search sampling, temperature, and a deterministic random seed.
 
-### ADR-2: Compose service-name networking over an external CLI orchestrator
-**Decision**: The orchestrator runs inside the Compose network and calls other services by hostname (`http://binding:12004`), rather than running as an external client hitting `localhost:<port>`.
-**Reasoning**: This is the architecture that actually resembles a real microservices deployment, and it removes the host-port-mapping bookkeeping from the orchestrator entirely — it only ever needs to know Compose service names via `services.yaml`. The trade-off is a slightly less convenient debug loop (you can't as trivially attach a debugger to the orchestrator process), mitigated by giving every service a mapped host port anyway for manual `curl` access during development.
+The orchestrator treats `candidates_per_iteration` as a total budget. Because the generator samples per seed, it divides that budget across the current seeds, rounds up, and trims excess candidates. REINVENT is configured to request unique output, and the orchestrator rejects duplicate returned IDs. It converts returned Tanimoto/NLL values into an append-only `generator` score record.
 
-### ADR-3: AutoDock Vina over higher-fidelity docking tools
-**Decision**: Use RDKit and Meeko preparation, AutoDock Vina docking, and ProLIF interaction fingerprints as one composite binding filter rather than separate reorderable stages.
-**Reasoning**: Vina is free, well-documented, and fast enough to run per-iteration on a modest number of candidates without specialized infrastructure. Its accuracy is a known, acknowledged limitation relative to commercial tools — appropriate for a project whose goal is demonstrating pipeline architecture, not achieving state-of-the-art docking accuracy. This trade-off is stated explicitly rather than implied, per the README's validation section.
+### 5.2 Synthesizability
 
-### ADR-4: RA-Score + SAscore over online retrosynthesis planning
-**Decision**: Combine the pretrained RA-Score classifier and RDKit SAscore with a sigmoid-gated generalized power mean rather than run a full retrosynthesis planner per generated molecule.
-**Reasoning**: The two models provide complementary learned and structural heuristics in milliseconds, keeping this filter cheap enough to reject candidates before docking. Fixing the power at `p = -2` limits compensation: a strong value cannot fully hide a weak one. A full retrosynthesis model remains a plausible later filter stage and can be added without changing the orchestrator.
+For each valid RDKit molecule, the service calculates:
 
-### ADR-5: Molecule score history is append-only and stage-agnostic
-**Decision**: Filters do not overwrite or delete prior stages' scores; every stage only appends its own `ScoreRecord`.
-**Reasoning**: Since the filter chain is user-reorderable and extensible, no stage can rely on being first, last, or in any particular position. Append-only history means the pipeline's behavior is independent of what ran before, and the full run is auditable after the fact without instrumentation added after the run — the audit trail is a structural property of the data model, not a logging afterthought.
+- RA-Score from a pinned, checksum-verified upstream XGBoost artifact using count-based ECFP6 input.
+- RDKit SAscore.
 
-### ADR-6: Two config files instead of one
-**Decision**: Pipeline definition (`pipeline.yaml`) and service location (`services.yaml`) are separate files.
-**Reasoning**: See §4 above — these answer different questions (experiment design vs. deployment topology) that change on different timescales and for different reasons. This separation is also what would let the same pipeline config target a different deployment substrate (e.g., Kubernetes service DNS names) by swapping only `services.yaml`.
+The values are converted to positive desirabilities:
 
----
+```text
+r = clamp(RA-Score, epsilon, 1)
+s = clamp((SA_worst - SAscore) / (SA_worst - SA_best), epsilon, 1)
+```
 
-## 8. Known limitations / explicit non-goals
+They are combined using the configured positive weights and fixed power `p = -2`:
 
-- **Not validated for real drug discovery decisions.** Docking and ADMET scores here come from fast, open-source approximations, not the higher-cost validated methods used in industry (see README).
-- **RA-Score has an applicability domain.** Its upstream pretrained model was trained on ChEMBL examples labelled by one synthesis planner and is not a substitute for route planning or chemist review. The service pins and regression-tests the legacy XGBoost artifact, but compatibility does not establish prospective validity.
-- **No horizontal scaling of individual filter stages.** Each service runs as a single container; under real load, `binding` in particular would be the bottleneck and would benefit from being scaled independently — noted as a natural next step, not implemented here.
-- **No authentication/authorization between services.** Appropriate for a local demonstration project; would need to be added before any multi-tenant or externally-exposed deployment.
-- **Readiness, not just liveness, matters at startup.** `depends_on` in Compose only guarantees a container has started, not that its app is ready to serve requests (especially relevant for `binding` and `generator`). Every service exposes `/health`, and Compose uses `condition: service_healthy`; the orchestrator's HTTP client additionally retries with backoff on first contact with each service as defense-in-depth.
+```text
+M = ((w_ra * r^-2 + w_sa * s^-2) / (w_ra + w_sa))^(-1/2)
+activation = sigmoid(steepness * (M - midpoint))
+passed = activation >= min_activation
+```
+
+The negative power limits compensation by the stronger input. Raw metrics, normalized inputs, power mean, activation, success flag, and per-molecule errors are retained. A bad molecule is rejected without failing the whole batch.
+
+### 5.3 Binding
+
+Binding is one composite service because each operation depends on the structure or pose created by the previous operation:
+
+1. Parse SMILES, add hydrogens, generate an ETKDGv3 conformer, and minimize with MMFF or UFF.
+2. Prepare ligand PDBQT with Meeko.
+3. Dock with AutoDock Vina.
+4. Reconstruct returned poses and fingerprint protein-ligand contacts with ProLIF.
+5. Calculate Vina score, ligand efficiency, a Vina-derived pKd proxy, LipE proxy, interaction coverage, and geometric binding desirability.
+6. Apply configured affinity, efficiency, LipE, and critical-interaction gates.
+
+Receptors and Vina maps are cached by target configuration. Access to each Vina context is locked because a Vina instance holds mutable ligand state. Preparation or docking failure rejects only the affected molecule; invalid target configuration fails the request.
+
+The current PDE5 protocol is documented alongside its assets in [targets/pde5_1tbf/README.md](targets/pde5_1tbf/README.md).
+
+### 5.4 ADMET-MOO
+
+ADMET-AI performs one batch prediction. Five registered `ADMETProperty` subclasses translate its output into objective and desirability values:
+
+| Property key | Goal |
+|---|---|
+| `bioavailability` | Maximize |
+| `aqueous_solubility` | Maximize |
+| `cyp3a4_inhibition` | Minimize |
+| `herg_blocking` | Minimize |
+| `dili` | Minimize |
+
+New objectives are added by implementing the `ADMETProperty` interface and registering the class. The request may choose a subset of active properties.
+
+PyMOO `NonDominatedSorting` assigns ranks; this service is not running an NSGA-II evolutionary search. Only rank-zero molecules are considered by the requested final decision method:
+
+- `knee_point`: PyMOO high-tradeoff points with deterministic distance-to-ideal fallback.
+- `desirability`: optionally weighted geometric mean of endpoint desirabilities.
+- `hypervolume_contribution`: unique normalized-front hypervolume contribution against a validated reference point.
+
+## 6. Orchestration lifecycle
+
+The orchestrator is a batch job, not a server. One container invocation:
+
+1. Loads and validates configuration.
+2. Creates `results/<run-name>/run.json` with status `running`.
+3. Waits for required services with configured retries and backoff.
+4. Generates the per-iteration candidate budget.
+5. Calls `/score` then `/filter` for each configured stage.
+6. Sends survivors to ADMET-MOO and chooses at most `top_k_feedback` Pareto-front molecules.
+7. Writes an iteration checkpoint and refreshes `run.json`.
+8. Feeds selected molecules into the next iteration.
+9. Marks the run `completed` or `failed` and exits.
+
+Normal early termination occurs when generation returns no candidates, all candidates are filtered, or ADMET-MOO selects no leads. There is currently no convergence or Pareto-improvement stopping rule.
+
+Each iteration artifact records input seeds, generated candidates, every filter's passed and rejected populations, survivors, all ADMET-evaluated molecules, the Pareto front, and selected feedback leads. `run.json` adds timestamps, status, termination reason, all iteration summaries, final selection, and a deduplicated molecule catalog.
+
+Writes use a temporary file followed by an atomic rename. A user-provided `XFORGE_RUN_NAME` selects the result subdirectory; otherwise the name is derived from the target slug and a high-resolution UTC timestamp. Explicit names should be unique: a pre-existing directory is reused and same-named checkpoint files are replaced.
+
+## 7. Visualization architecture
+
+The visualizer mounts `results/` read-only and never participates in orchestration. Its backend validates run names, loads result JSON, builds lineage with NetworkX, computes layout, and renders graph layers as Matplotlib SVG. The browser handles visibility and interaction:
+
+- only initial hits are visible at load
+- clicking a node reveals or hides its descendant branch
+- **Reveal whole graph** exposes all nodes
+- the default single-parent acyclic edge set suppresses cycles and additional parents
+- **Show all edges** restores every observed edge
+- leaf nodes are square
+- hover metadata is derived from the run artifact
+
+This split keeps chemistry/provenance parsing server-side while leaving graph exploration responsive and prevents result mutation through the UI.
+
+## 8. Models and reproducibility
+
+| Artifact | Handling |
+|---|---|
+| REINVENT Mol2Mol prior | Supplied locally, ignored by Git, mounted read-only |
+| REINVENT4 source/runtime | Built from the versioned Compose build argument (`v4.8`) |
+| RA-Score model | Downloaded from a pinned commit and checksum-verified at image build |
+| ADMET-AI model | Loaded by the ADMET-AI package during service readiness |
+| 1TBF receptor assets | Versioned under `targets/pde5_1tbf/`, mounted read-only |
+
+Random seeds are configurable for REINVENT and Vina. RDKit conformer generation derives a stable seed from molecular SMILES. Exact numerical reproduction can still depend on container image, model, CPU/library implementation, and upstream prediction behavior.
+
+## 9. Verification
+
+The current repository has 58 passing tests:
+
+- generator: 11
+- synthesizability: 6
+- binding: 4
+- ADMET-MOO: 18
+- orchestrator: 10
+- visualizer: 6
+- top-level integration: 3
+
+The top-level tests exercise deterministic fake-service loops, including the current five-iteration stage order. A separate real Compose run from Sildenafil against 1TBF completed all five iterations with 24 unique generated candidates, no recorded stage errors, and two final selected leads. That run verifies deployment and contract integration, not prospective scientific validity.
+
+## 10. Architecture decisions
+
+### Synchronous REST instead of a queue
+
+Current runs contain small populations on one Compose host. REST is inspectable, directly testable, and sufficient for the sequential data dependency. A queue and distributed workers would become useful if docking throughput or horizontal scaling became a requirement.
+
+### Configured filters, fixed generator and selector
+
+Generator and ADMET-MOO are the feedback loop's required endpoints. Intermediate filters use a common contract and ordered configuration. The internal binding operations remain fixed because exposing pose-dependent steps as freely reorderable services would create invalid combinations and move large transient pose artifacts through the shared envelope.
+
+### Append-only molecule events
+
+Provenance is part of the persisted data model rather than only application logs. Services append observations, and the orchestrator verifies previous history before accepting a response.
+
+### One-shot orchestrator
+
+A run has a clear beginning, durable checkpoints, terminal status, and process exit code. Keeping the coordinator as a batch job avoids an idle API container and makes Compose suitable for launching and observing a single experiment.
+
+### NetworkX/Matplotlib visualizer
+
+The server owns lineage normalization and deterministic SVG rendering; browser JavaScript owns expansion state and metadata interaction. A separate read-only service keeps result inspection independent of scientific execution.
+
+## 11. Known limitations
+
+- The system is a portfolio and integration platform, not a validated drug-discovery decision system.
+- The current 1TBF receptor removes catalytic zinc, magnesium, ordered waters, glycerol, and the crystallographic ligand. This makes a deterministic demonstration target, not a validated PDE5 docking protocol.
+- Binding uses a rigid receptor and retains scores/interactions in JSON, not reusable docked pose files.
+- The LipE value is a Vina-derived proxy, not an experimentally measured potency-based LipE.
+- RA-Score has the applicability domain and labeling assumptions of its upstream training data; it is not a retrosynthesis plan.
+- ADMET-AI predictions and desirability curves have not been calibrated for a specific discovery program.
+- Current default thresholds are permissive to exercise the complete loop.
+- Each service is single-container and CPU-oriented; binding serializes access to a target's Vina context.
+- There is no authentication, authorization, job queue, distributed scheduler, or automatic resume of interrupted runs.
+- Service URLs and localhost ports are suitable for a trusted local deployment, not direct public exposure.

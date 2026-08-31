@@ -2,86 +2,148 @@
 
 **eXtensible Feedback-Optimized Reiterative Generation Engine for Hit-to-Lead Engineering**
 
-> Not to be confused with Cresset's "Forge" molecular modeling suite — X-FORGE is an independent, open-source project.
+> X-FORGE is an independent open-source project and is not affiliated with Cresset's Forge molecular-modeling suite.
 
-X-FORGE is a modular, closed-loop pipeline for computational hit-to-lead optimization. Starting from a single known "hit" molecule (a SMILES string with confirmed binding activity against a target pocket), it iteratively generates, filters, and scores structurally related candidates — using multi-objective optimization over ADMET properties to select the most promising molecules to seed the next round of generation.
+X-FORGE is a containerized, config-driven molecular-design loop. It starts from one or more known hits, generates related molecules with REINVENT4 Mol2Mol, evaluates them through modular scientific services, selects multi-objective leads, and feeds those leads into the next iteration while retaining molecule-level provenance.
 
-Each stage of the pipeline is an independently deployable service, orchestrated via Docker Compose. Filter stages (synthesizability, physicochemical rules, docking, or anything you add) can be reordered, swapped, or removed entirely through configuration — no code changes required.
+The current reference workflow is:
 
----
-
-## What it does
-
-Drug discovery's hit-to-lead phase is fundamentally iterative: take a molecule known to bind a target, generate variations on it, throw out the bad ones, and repeat until you converge on candidates worth synthesizing and testing. X-FORGE automates that loop end-to-end:
-
-```
-                    ┌─────────────────────────────────────────────┐
-                    │                                               │
-                    ▼                                               │
-   seed SMILES ──▶ [Generator] ──▶ [Filter chain] ──▶ [ADMET + MOO] │
-                                    (configurable,                   │
-                                     reorderable,                    │
-                                     extensible)                     │
-                                          │                          │
-                                          └── top-K candidates ──────┘
-                                              (next iteration seed)
-```
-
-1. **Generate** — A generative model (e.g., genetic-algorithm mutation over SELFIES, or a fine-tuned RL model like REINVENT4) proposes structurally similar candidate molecules from the current seed set.
-2. **Filter** — Candidates pass through a configurable, ordered chain of
-   filters. The implemented **synthesizability** filter combines RA-Score and
-   SAscore with a sigmoid-gated `p = -2` generalized power mean before the
-   **binding** filter prepares 3D ligands, docks them with AutoDock Vina,
-   calculates efficiency metrics, and checks pose interactions with ProLIF.
-   Additional physicochemical filters remain planned extensions.
-
-   Filters can be added, removed, or reordered via config — none of them need to know what ran before or after them.
-3. **ADMET + Multi-Objective Optimization** — Surviving candidates are scored across ADMET properties (absorption, distribution, metabolism, excretion, toxicity) and ranked using Pareto-based multi-objective optimization (non-dominated sorting), since these objectives routinely trade off against each other.
-4. **Feedback** — The top candidates from the Pareto front become the seed set for the next generation round. Repeat for *n* iterations.
-
-The generative model and the ADMET/MOO step are fixed endpoints of the pipeline. Everything in between is swappable.
-
----
-
-## Why this design
-
-This project is built to demonstrate production engineering practices applied to a real, multi-stage scientific ML workflow — not to claim novelty in the underlying chemistry methods (SAscore, Vina, ADMET prediction, and NSGA-II-style Pareto ranking are all established, off-the-shelf techniques). The goal is a pipeline that is:
-
-- **Modular** — each stage is a separate service with a uniform REST contract, so filters are additive rather than invasive.
-- **Reproducible** — a single `docker compose up` on a clean machine reproduces a full run from scratch, with all dependencies pinned.
-- **Observable** — every molecule carries a full record of scores and provenance as it flows through the pipeline, so you can audit exactly why a candidate survived or was rejected at any stage.
-- **Tested at every level** — per-service unit tests, a shared-schema test suite, and a cross-service integration smoke test that runs the full loop on a toy example in CI.
-
----
-
-## Architecture
-
-X-FORGE is a set of independently containerized services on a shared Docker Compose network, coordinated by an orchestrator that reads pipeline configuration and calls each service by hostname.
-
-| Service | Role | Fixed or configurable |
-|---|---|---|
-| `generator` | Proposes candidate molecules from seed SMILES | Fixed endpoint |
-| `synthesizability` | RA-Score + SAscore sigmoid-gated `p = -2` synthetic-accessibility filter | Configurable stage |
-| `filter-physchem` | Scores/gates on drug-like physicochemical properties | Configurable stage |
-| `binding` | RDKit/Meeko preparation, Vina docking, efficiency metrics, and ProLIF pose gates | Configurable stage |
-| `admet-moo` | Scores ADMET properties, ranks via Pareto optimization | Fixed endpoint |
-| `orchestrator` | Reads config, sequences service calls, drives the iteration loop | Coordination layer |
-| `visualizer` | Interactively explores molecule lineage and score history | Read-only UI |
-
-Every filter service exposes the same contract, which is what makes them interchangeable:
-
-```
-POST /score    { molecules: [...], parameters: {...} }  →  { molecules: [...annotated] }
-POST /filter   { molecules: [...], parameters: {...} }  →  { passed: [...], rejected: [...] }
+```text
+seed molecule(s)
+      │
+      ▼
+REINVENT4 Mol2Mol generation
+      │
+      ▼
+synthesizability scoring and gate
+      │
+      ▼
+3D preparation, docking, and binding filters
+      │
+      ▼
+ADMET prediction, Pareto ranking, and lead selection
+      │
+      └──────── selected leads become the next iteration's seeds
 ```
 
-A shared schema library (`libs/schemas`) defines the `Molecule` object and API models that every service imports, preventing schema drift across service boundaries.
+The default configuration runs five iterations from Sildenafil against PDE5 structure 1TBF.
 
-### Configuration-driven pipeline
+## Current services
 
-The order, presence, and thresholds of filter stages are entirely defined in `config/pipeline.yaml` — reordering the pipeline or adding a new filter requires no changes to the orchestrator itself, only a new service definition and a config entry:
+| Compose service | Role | Host port | Lifecycle |
+|---|---|---:|---|
+| `generator` | REINVENT4 Mol2Mol candidate generation | `12000` | Resident API |
+| `synthesizability` | RA-Score/SAscore composite scoring and filtering | `12002` | Resident API |
+| `binding` | RDKit/Meeko preparation, Vina docking, and ProLIF interaction filtering | `12004` | Resident API |
+| `admet-moo` | ADMET-AI prediction, Pareto analysis, and lead selection | `12001` | Resident API |
+| `orchestrator` | Reads configuration and executes one pipeline run | None | One-shot job |
+| `visualizer` | Read-only NetworkX/Matplotlib run explorer | `12010` | Resident web app |
+
+Published ports bind to `127.0.0.1`; services communicate inside Compose by hostname. Port `12003` is intentionally unused so existing port assignments remain stable.
+
+## What each stage does
+
+### Generation
+
+The generator wraps REINVENT4 in Mol2Mol mode. It accepts the current seed set and returns REINVENT-produced candidates with parent identifiers so every generated molecule can be traced back through the run graph.
+
+### Synthesizability
+
+The synthesizability service combines:
+
+- RA-Score, loaded from the official XGBoost model pinned and checksum-verified during the image build.
+- RDKit's SAscore, normalized so higher values mean easier synthesis.
+- A generalized power mean with `p = -2`, which penalizes a poor component rather than allowing a strong component to hide it.
+- A sigmoid activation used as the final thresholdable score.
+
+The service records the raw scores, normalized scores, composite mean, activation, and pass decision.
+
+### Binding
+
+The binding service is deliberately a single ordered service because its operations share prepared structures and poses:
+
+1. RDKit ETKDG conformer generation and MMFF/UFF minimization.
+2. Meeko ligand PDBQT preparation.
+3. AutoDock Vina docking.
+4. Ligand-efficiency and LipE-proxy calculation.
+5. ProLIF interaction fingerprinting and critical-interaction checks.
+
+The sample 1TBF protocol uses a prepared chain-A receptor and a docking box centered on the crystallographic Sildenafil site. See [the architecture notes](ARCHITECTURE.md) for its current modeling limitations.
+
+### ADMET multi-objective selection
+
+ADMET-AI currently predicts five modular properties, each represented by an `ADMETProperty` subclass:
+
+- oral bioavailability
+- aqueous solubility
+- CYP3A4 inhibition
+- hERG liability
+- drug-induced liver injury (DILI)
+
+PyMOO non-dominated sorting identifies the Pareto front. The configured selection strategy can be knee-point distance, desirability functions with a weighted geometric mean, or hypervolume contribution.
+
+### Orchestration and results
+
+The orchestrator reads `config/services.yaml`, `config/pipeline.yaml`, and the selected target file. It calls service hostnames in configured order, records scores and decisions, selects feedback leads, and writes after every iteration.
+
+Each run directory contains:
+
+```text
+results/<run-name>/
+├── iteration_001.json
+├── iteration_002.json
+├── ...
+└── run.json
+```
+
+Molecule scores are append-only event lists. This preserves repeated observations instead of overwriting an earlier score from another stage or iteration.
+
+### Visualization
+
+The visualizer reads run result JSON without modifying it. Initial hits appear first; clicking a molecule expands or collapses its children, and **Reveal whole graph** exposes all nodes. By default the display uses a single-parent acyclic view; **Show all edges** restores cycles and additional parents. Leaf molecules are square.
+
+## Quick start
+
+Prerequisites:
+
+- Docker with Docker Compose
+- the REINVENT Mol2Mol prior at `models/reinvent/mol2mol_medium_similarity.prior`
+
+The prior is mounted into the generator and is intentionally not committed. Target configuration and the prepared 1TBF receptor are included in the repository.
+
+Run the default five-iteration Sildenafil pipeline with an explicit result name:
+
+```bash
+XFORGE_RUN_NAME=sildenafil-demo \
+  docker compose up --build --abort-on-container-exit \
+  --exit-code-from orchestrator orchestrator
+```
+
+If `XFORGE_RUN_NAME` is omitted, the orchestrator creates a descriptive directory name from the target slug and a UTC timestamp. Use a unique explicit name: if the directory already exists, files with the same checkpoint names are replaced.
+
+Start the visualizer after the run:
+
+```bash
+docker compose up --build -d visualizer
+```
+
+Open `http://localhost:12010`, choose a run, and load it. Stop the deployment when finished:
+
+```bash
+docker compose down
+```
+
+Generator setup and model details are documented in [services/generator/README.md](services/generator/README.md).
+
+## Configuration
+
+Service locations are declared in `config/services.yaml`. Pipeline behavior belongs in `config/pipeline.yaml`, while seed and protein-specific settings belong in `config/targets/*.yaml`.
+
+The current default has this shape (the checked-in file contains the complete binding and HTTP settings):
 
 ```yaml
+target: targets/sildenafil_pde5.yaml
+
 pipeline:
   - synthesizability:
       power: -2
@@ -93,106 +155,71 @@ pipeline:
       receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
       box_center: [28.792, 30.186, 64.179]
       box_size: [24.0, 24.0, 24.0]
-      max_vina_score: -4.0
+
+iterations: 5
+candidates_per_iteration: 5
+top_k_feedback: 2
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 42
+
+admet_moo:
+  selection:
+    method: desirability
+    weights:
+      herg_blocking: 2.0
 ```
 
-A separate `config/services.yaml` maps each named stage to its network location, keeping "what runs, in what order, with what thresholds" cleanly separate from "where does each stage actually live" — a seam that also means the same pipeline config could target a different deployment (e.g., Kubernetes) by swapping only the service registry.
-
----
+The full files are the source of truth for timeouts, retry policy, target paths, docking thresholds, property weights, and desirability settings.
 
 ## Repository layout
 
-```
-x-forge/
-├── docker-compose.yml
-├── docker-compose.override.yml     # dev-only overrides
+```text
+X-FORGE/
 ├── config/
-│   ├── pipeline.yaml                # filter order + thresholds
-│   ├── services.yaml                # stage name → hostname mapping
-│   └── targets/                     # seed SMILES, target PDB, pocket definitions
-├── libs/
-│   └── schemas/                     # shared Molecule / API models
+│   ├── pipeline.yaml             # ordered workflow and loop settings
+│   ├── services.yaml             # internal service URLs and timeouts
+│   └── targets/                  # seeds and target-specific protocol settings
+├── libs/schemas/                 # shared molecule and score-event contracts
+├── models/reinvent/              # local, uncommitted REINVENT prior
 ├── services/
 │   ├── generator/
 │   ├── synthesizability/
-│   ├── filter-physchem/
 │   ├── binding/
 │   ├── admet_moo/
 │   ├── orchestrator/
 │   └── visualizer/
-│       # each service has its own Dockerfile, dependencies, app/, and tests/
-├── tests/
-│   └── integration/                 # cross-service, full-loop smoke test
-├── .github/workflows/               # per-service CI + compose smoke test
-└── results/
-    └── <run-name>/                  # iteration checkpoints + full run output
+├── targets/pde5_1tbf/            # prepared receptor and target metadata
+├── tests/integration/             # deterministic orchestration tests
+├── results/                       # ignored runtime output, except .gitkeep
+├── docker-compose.yml
+└── ARCHITECTURE.md
 ```
 
-Unit tests live alongside the service they test; only integration tests that span multiple services live at the repo root.
+## Verification status
 
----
+The repository currently has 58 passing automated tests across the service suites and three top-level orchestration scenarios. Compose configuration and Python linting also pass.
 
-## Running it
+A real five-iteration Compose run completed from Sildenafil against 1TBF. It produced 24 unique candidates, completed every configured stage without recorded errors, and selected two final leads. This validates service integration and provenance handling; it is not evidence that the selected molecules are experimentally active, safe, or synthesizable. The current sample thresholds are intentionally permissive enough to exercise the complete loop.
 
-```bash
-XFORGE_RUN_NAME=my-sildenafil-run \
-docker compose up --build \
-  --abort-on-container-exit \
-  --exit-code-from orchestrator \
-  orchestrator
-```
+## Current scope
 
-This builds and starts every service, then the orchestrator runs the configured pipeline against the example target in `config/targets/`, iterating for the configured number of rounds and writing results to `results/`.
+Implemented now:
 
-`XFORGE_RUN_NAME` selects the subdirectory beneath `results/`. It may contain
-letters, numbers, dots, underscores, and hyphens. Omit it to automatically use
-the target name and UTC start time, such as
-`results/sildenafil-pde5-1tbf-20260830T194631123456Z/`.
+- REINVENT4 Mol2Mol generation
+- nonlinear RA-Score/SAscore synthesizability filtering
+- 3D preparation, Vina docking, efficiency metrics, and interaction filtering
+- modular ADMET-AI property prediction and three Pareto selection methods
+- configurable iterative orchestration with atomic result persistence
+- interactive graph exploration of completed runs
+- unit, service, and deterministic integration tests
 
-To run against your own target, add a target config with a seed SMILES string, a PDB structure for the binding pocket, and pocket coordinates, then point `pipeline.yaml` at it.
+Not yet implemented includes a separate general physicochemical filter, retrosynthesis planning, experimental calibration, distributed scheduling, authentication, and production deployment controls.
 
-### Visualizing a run
+See [ARCHITECTURE.md](ARCHITECTURE.md) for service contracts, provenance design, algorithms, lifecycle decisions, and known limitations.
 
-Start the persistent, read-only results viewer separately:
+## License
 
-```bash
-docker compose up --build -d visualizer
-```
-
-Open <http://localhost:12010>. Choose a run, click a molecule to reveal or hide
-its children, and hover over any node to inspect provenance and score metadata.
-Only the initial hits are shown initially; **Reveal whole graph** expands every
-lineage branch at once. The default view suppresses cycles and repeated-parent
-edges; select **Show all edges** to include them.
-
----
-
-## Validation
-
-To demonstrate the pipeline actually works, rather than just "producing output," a named run directory can be retained and checked against known SAR (structure-activity relationship) trends for its target pocket — showing whether the loop recovers previously known potent analogs of the seed molecule and whether the Pareto front improves across iterations.
-
----
-
-## Status
-
-Portfolio / demonstration project. Not intended for real drug discovery decisions — docking and ADMET predictions here use fast, approximate open-source tools (AutoDock Vina, RDKit-based heuristics) rather than the higher-cost validated methods used in industry pipelines.
-
-### Current implementation
-
-The two fixed-endpoint services, synthesizability and binding filters,
-orchestration loop, and run visualizer are runnable.
-`generator` accepts one or more hit
-SMILES through `POST /generate` and uses REINVENT4 Mol2Mol sampling to generate
-structurally related candidates. `admet-moo` accepts filtered candidates through
-`POST /optimize`, predicts a modular ADMET objective panel with ADMET-AI, builds
-the Pareto front with pymoo, and supports knee-point, desirability/geometric
-mean, or hypervolume-contribution lead selection. `orchestrator` reads the YAML
-configuration, drives the iterative feedback loop, and writes auditable run and
-per-iteration results. `binding` performs RDKit/Meeko 3D preparation, Vina
-docking, ligand-efficiency and LipE-proxy calculation, and ProLIF interaction
-fingerprinting. `synthesizability` preserves raw RA-Score and SAscore values,
-their unit desirabilities, the `p = -2` power mean, and the final sigmoid
-activation in every molecule's audit history. The checked-in example runs five
-feedback iterations from sildenafil against the prepared 1TBF PDE5A target in
-the order generation → synthesizability → binding → ADMET/MOO.
-See the service READMEs for API and runtime details.
+[MIT](LICENSE)
