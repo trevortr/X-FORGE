@@ -63,6 +63,13 @@ def test_health_liveness_properties_and_routes(monkeypatch) -> None:
 
     assert asyncio.run(health(FakePredictor())).status == "ok"
     assert asyncio.run(live()).status == "ok"
-    assert len(asyncio.run(list_properties())) == 5
+    assert len(asyncio.run(list_properties())) == 12
     paths = {route.path for route in app.routes}
-    assert {"/optimize", "/properties", "/health", "/live"}.issubset(paths)
+    assert {
+        "/score",
+        "/filter",
+        "/optimize",
+        "/properties",
+        "/health",
+        "/live",
+    }.issubset(paths)

@@ -1,0 +1,77 @@
+# Recommended lower-cost funnel. Tier 4 is omitted and final ranking uses the
+# explicit Tier 3 docking objective rather than free-energy evidence.
+target: ../targets/sildenafil_pde5.yaml
+
+iterations: 4
+candidates_per_iteration: 40
+top_k_feedback: 8
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 707
+  reward:
+    service: policy_scoring
+    pool_multiplier: 3
+    parameters:
+      # Illustrative value; replace with a calibrated target-affinity panel.
+      affinity_training_set:
+        - smiles: "CCCc1c2c(n(n1)C)C(=O)NC(=N2)c3cc(ccc3OCC)S(=O)(=O)N4CCN(CC4)C"
+          value: -9.0
+      affinity_k: 5
+      affinity_similarity_power: 2.0
+      min_composite_desirability: 0.10
+
+pipeline:
+  - physchem:
+      max_molecular_weight: 550
+      max_clogp: 5.5
+      max_hbond_donors: 5
+      max_hbond_acceptors: 11
+      max_tpsa: 150
+      max_rotatable_bonds: 11
+      min_formal_charge: -1
+      max_formal_charge: 1
+      min_heavy_atoms: 8
+      max_heavy_atoms: 75
+      allow_covalent_warheads: false
+      require_pka_prediction: false
+      require_retrosynthesis: false
+  - admet_screen:
+      min_log_s: -4.0
+      max_microsomal_clint: 50.0
+      min_log_papp: 0.0
+      max_pgp_risk: 0.5
+      max_herg_risk: 0.5
+      max_cyp_risk: 0.5
+      max_candidates: 20
+  - binding:
+      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
+      box_center: [28.792, 30.186, 64.179]
+      box_size: [24.0, 24.0, 24.0]
+      exhaustiveness: 4
+      num_poses: 3
+      conformer_count: 10
+      max_internal_strain_kcal_mol: 6.0
+      max_vina_score: -5.0
+      min_ligand_efficiency: 0.10
+      critical_interactions: []
+
+admet_moo:
+  properties:
+    - docking_affinity
+    - aqueous_solubility
+    - metabolic_clearance
+    - herg_blocking
+  selection:
+    method: nsga3
+    nsga3_reference_partitions: 5
+    diversity:
+      enabled: true
+      tanimoto_distance_threshold: 0.4
+
+http:
+  timeout_seconds: 1800
+  max_attempts: 8
+  backoff_seconds: 1

@@ -24,18 +24,29 @@ class PipelineStage:
     parameters: dict[str, Any]
 
 
+class GeneratorRewardOptions(BaseModel):
+    service: str = "policy_scoring"
+    pool_multiplier: int = Field(default=4, ge=1, le=100)
+    parameters: dict[str, Any]
+
+
 class GeneratorOptions(BaseModel):
     strategy: Literal["multinomial", "beamsearch"] = "multinomial"
     temperature: float = Field(default=1.0, ge=0.1, le=2.0)
     random_seed: int = Field(default=42, ge=0)
+    reward: GeneratorRewardOptions | None = None
 
 
 class SelectionOptions(BaseModel):
-    method: Literal["knee_point", "desirability", "hypervolume_contribution"] = (
+    method: Literal[
+        "knee_point", "desirability", "hypervolume_contribution", "nsga3"
+    ] = (
         "knee_point"
     )
     weights: dict[str, float] | None = None
     reference_point: dict[str, float] | None = None
+    nsga3_reference_partitions: int = Field(default=4, ge=1, le=20)
+    diversity: dict[str, Any] = Field(default_factory=dict)
 
 
 class ADMETOptions(BaseModel):
@@ -123,6 +134,8 @@ class ConfigurationLoader:
         stages = cls._parse_stages(pipeline.pipeline)
 
         required = {"generator", "admet_moo", *(stage.name for stage in stages)}
+        if pipeline.generator.reward is not None:
+            required.add(pipeline.generator.reward.service)
         missing = sorted(required - service_file.services.keys())
         if missing:
             raise ConfigurationError(

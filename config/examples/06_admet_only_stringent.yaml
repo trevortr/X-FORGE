@@ -1,0 +1,42 @@
+# Computationally inexpensive ML/DL funnel: strict ADMET screening and no 3D
+# docking or physics stage.
+target: ../targets/ibuprofen_cox2.yaml
+
+iterations: 4
+candidates_per_iteration: 100
+top_k_feedback: 12
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 606
+
+pipeline:
+  - admet_screen:
+      min_log_s: -3.5
+      max_microsomal_clint: 30.0
+      max_hepatocyte_clint: 30.0
+      min_half_life: 2.0
+      min_log_papp: 0.25
+      max_pgp_risk: 0.35
+      max_herg_risk: 0.30
+      max_cyp_risk: 0.35
+      max_candidates: 25
+
+admet_moo:
+  properties:
+    - aqueous_solubility
+    - metabolic_clearance
+    - herg_blocking
+    - cyp3a4_inhibition
+  selection:
+    method: nsga3
+    nsga3_reference_partitions: 6
+    diversity:
+      enabled: true
+      tanimoto_distance_threshold: 0.4
+
+http:
+  timeout_seconds: 1200
+  max_attempts: 6
+  backoff_seconds: 1

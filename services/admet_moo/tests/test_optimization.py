@@ -26,7 +26,7 @@ PREDICTIONS = [
 
 @pytest.mark.parametrize(
     "method",
-    ["knee_point", "desirability", "hypervolume_contribution"],
+    ["knee_point", "desirability", "hypervolume_contribution", "nsga3"],
 )
 def test_each_strategy_selects_only_from_pareto_front(method: str) -> None:
     result = ADMETOptimizer(property_registry).optimize(
@@ -70,3 +70,22 @@ def test_hypervolume_reference_must_be_worse_than_normalized_front() -> None:
             method="hypervolume_contribution",
             reference_point={"bioavailability": 0.5},
         )
+
+
+def test_nsga3_can_apply_scaffold_diversity_and_synthesis_batches() -> None:
+    from app.models import DiversityOptions
+
+    result = ADMETOptimizer(property_registry).optimize(
+        PREDICTIONS[:2],
+        top_k=2,
+        method="nsga3",
+        smiles=["CCO", "c1ccccc1"],
+        shared_intermediates=["batch-a", "batch-b"],
+        diversity=DiversityOptions(enabled=True),
+    )
+
+    assert len(result.selected_indices) == 2
+    assert {candidate.synthesis_batch for candidate in result.candidates} == {
+        "batch-a",
+        "batch-b",
+    }

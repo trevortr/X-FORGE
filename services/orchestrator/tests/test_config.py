@@ -84,3 +84,20 @@ def test_loader_rejects_unsafe_run_names(tmp_path: Path, run_name: str) -> None:
             tmp_path / "services.yaml",
             run_name_override=run_name,
         )
+
+
+def test_loader_requires_configured_policy_reward_service(tmp_path: Path) -> None:
+    _write_minimal_configuration(tmp_path)
+    (tmp_path / "pipeline.yaml").write_text(
+        "target: target.yaml\npipeline: []\n"
+        "generator:\n"
+        "  reward:\n"
+        "    service: policy_scoring\n"
+        "    parameters:\n"
+        "      affinity_training_set:\n"
+        "        - {smiles: CCO, value: -8.0}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigurationError, match="policy_scoring"):
+        ConfigurationLoader.load(tmp_path / "pipeline.yaml", tmp_path / "services.yaml")

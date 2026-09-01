@@ -1,0 +1,60 @@
+# Negative-design mechanics using the available COX-2 structure as an
+# illustrative off-target for PDE5. Replace it with a biologically relevant,
+# prepared homolog and validate both docking boxes.
+target: ../targets/sildenafil_pde5.yaml
+
+iterations: 3
+candidates_per_iteration: 24
+top_k_feedback: 6
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 909
+
+pipeline:
+  - admet_screen:
+      min_log_s: -4.0
+      max_microsomal_clint: 50.0
+      min_log_papp: 0.0
+      max_pgp_risk: 0.5
+      max_herg_risk: 0.5
+      max_cyp_risk: 0.5
+      max_candidates: 12
+  - binding:
+      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
+      box_center: [28.792, 30.186, 64.179]
+      box_size: [24.0, 24.0, 24.0]
+      exhaustiveness: 6
+      num_poses: 4
+      conformer_count: 20
+      max_internal_strain_kcal_mol: 6.0
+      max_vina_score: -5.0
+      min_ligand_efficiency: 0.10
+      off_targets:
+        - name: illustrative-cox2
+          receptor_pdbqt: /targets/cox2_4ph9/4ph9_chain_a_receptor.pdbqt
+          receptor_pdb: /targets/cox2_4ph9/4ph9_chain_a_prepared.pdb
+          box_center: [13.008, 23.487, 25.256]
+          box_size: [22.0, 22.0, 22.0]
+
+admet_moo:
+  properties:
+    - docking_affinity
+    - docking_selectivity_gap
+    - metabolic_clearance
+    - herg_blocking
+  selection:
+    method: nsga3
+    nsga3_reference_partitions: 5
+    diversity:
+      enabled: true
+      tanimoto_distance_threshold: 0.4
+      morgan_radius: 2
+      fingerprint_bits: 2048
+
+http:
+  timeout_seconds: 3600
+  max_attempts: 10
+  backoff_seconds: 1

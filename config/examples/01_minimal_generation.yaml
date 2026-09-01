@@ -1,0 +1,24 @@
+# Smallest useful feedback loop: generation followed by the original default
+# ADMET property panel and knee-point selection.
+target: ../targets/example_target.yaml
+
+iterations: 2
+candidates_per_iteration: 10
+top_k_feedback: 3
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 101
+
+pipeline: []
+
+admet_moo:
+  properties: null
+  selection:
+    method: knee_point
+
+http:
+  timeout_seconds: 900
+  max_attempts: 5
+  backoff_seconds: 1

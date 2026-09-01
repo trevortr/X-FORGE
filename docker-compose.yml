@@ -50,6 +50,51 @@ services:
       retries: 3
       start_period: 180s
 
+  admet-ai:
+    build:
+      context: .
+      dockerfile: services/admet_ai/Dockerfile
+      args:
+        PYTORCH_VERSION: "2.13.0"
+    environment:
+      ADMET_AI_PORT: 12007
+      ADMET_QUEUE_COUNT: ${ADMET_QUEUE_COUNT:-1}
+      ADMET_NUM_WORKERS: ${ADMET_NUM_WORKERS:-0}
+      ADMET_MAX_BULK_SIZE: ${ADMET_MAX_BULK_SIZE:-10000}
+    ports:
+      - "127.0.0.1:12007:12007"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12007/health', timeout=30)
+      interval: 30s
+      timeout: 60s
+      retries: 3
+      start_period: 180s
+
+  policy-scoring:
+    build:
+      context: .
+      dockerfile: services/policy_scoring/Dockerfile
+    ports:
+      - "127.0.0.1:12003:12003"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12003/health', timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   synthesizability:
     build:
       context: .
@@ -92,6 +137,49 @@ services:
       retries: 3
       start_period: 30s
 
+  physchem:
+    build:
+      context: .
+      dockerfile: services/physchem/Dockerfile
+    ports:
+      - "127.0.0.1:12005:12005"
+    volumes:
+      - ./config:/config:ro
+      - ./targets:/targets:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12005/health', timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  physics:
+    build:
+      context: .
+      dockerfile: services/physics/Dockerfile
+    ports:
+      - "127.0.0.1:12006:12006"
+    volumes:
+      - ./results:/results:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://localhost:12006/health', timeout=5)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   orchestrator:
     build:
       context: .
@@ -110,6 +198,12 @@ services:
       synthesizability:
         condition: service_healthy
       binding:
+        condition: service_healthy
+      policy-scoring:
+        condition: service_healthy
+      physchem:
+        condition: service_healthy
+      physics:
         condition: service_healthy
     restart: "no"
 

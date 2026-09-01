@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import prolif as plf
 from meeko import MoleculePreparation, PDBQTMolecule, PDBQTWriterLegacy, RDKitMolCreate
@@ -13,7 +13,7 @@ from vina import Vina
 
 from libs.schemas import Molecule
 
-from .models import BindingParameters
+from .models import BindingParameters, OffTargetParameters
 
 GAS_CONSTANT_KCAL = 0.00198720425864083
 
@@ -28,6 +28,7 @@ class BindingResult:
     interactions: tuple[str, ...]
     passed: bool
     error: str | None = None
+    off_target_scores: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -69,6 +70,8 @@ def evaluate_metrics(
     clogp: float,
     interactions: set[str],
     parameters: BindingParameters,
+    internal_strain: float = 0.0,
+    off_target_score: float | None = None,
 ) -> tuple[dict[str, float], bool]:
     ligand_efficiency = -vina_score / heavy_atom_count
     pkd_proxy = -vina_score / (
@@ -87,6 +90,19 @@ def evaluate_metrics(
         desirabilities.append(_logistic(lipe_proxy - parameters.min_lipe_proxy))
     if parameters.critical_interactions:
         desirabilities.append(max(critical_fraction, 1e-12))
+    desirabilities.append(
+        _logistic(parameters.max_internal_strain_kcal_mol - internal_strain)
+    )
+    selectivity_gap = None
+    if off_target_score is not None:
+        selectivity_gap = vina_score - off_target_score
+        if parameters.min_selectivity_gap_target_minus_offtarget is not None:
+            desirabilities.append(
+                _logistic(
+                    selectivity_gap
+                    - parameters.min_selectivity_gap_target_minus_offtarget
+                )
+            )
     binding_desirability = math.prod(desirabilities) ** (1.0 / len(desirabilities))
 
     passed = (
@@ -96,6 +112,15 @@ def evaluate_metrics(
             parameters.min_lipe_proxy is None or lipe_proxy >= parameters.min_lipe_proxy
         )
         and interactions_passed
+        and internal_strain <= parameters.max_internal_strain_kcal_mol
+        and (
+            parameters.min_selectivity_gap_target_minus_offtarget is None
+            or (
+                selectivity_gap is not None
+                and selectivity_gap
+                >= parameters.min_selectivity_gap_target_minus_offtarget
+            )
+        )
     )
     values = {
         "docking_succeeded": 1.0,
@@ -108,7 +133,15 @@ def evaluate_metrics(
         "interaction_count": float(len(interactions)),
         "critical_interaction_fraction": critical_fraction,
         "binding_desirability": binding_desirability,
+        "internal_ligand_strain_kcal_mol": internal_strain,
+        "torsional_strain_pass": float(
+            internal_strain <= parameters.max_internal_strain_kcal_mol
+        ),
     }
+    if off_target_score is not None:
+        values["best_off_target_vina_score"] = off_target_score
+        values["selectivity_gap_target_minus_offtarget"] = vina_score - off_target_score
+        values["selectivity_gap_offtarget_minus_target"] = off_target_score - vina_score
     return values, passed
 
 
@@ -140,9 +173,16 @@ class BindingScorer:
                     )
         return results
 
-    def _context(self, parameters: BindingParameters) -> _DockingContext:
-        receptor_pdbqt = Path(parameters.receptor_pdbqt)
-        receptor_pdb = Path(parameters.receptor_pdb)
+    def _context(
+        self,
+        target: BindingParameters | OffTargetParameters,
+        runtime: BindingParameters | None = None,
+    ) -> _DockingContext:
+        runtime = runtime or target
+        if not isinstance(runtime, BindingParameters):
+            raise TargetConfigurationError("binding runtime parameters are required")
+        receptor_pdbqt = Path(target.receptor_pdbqt)
+        receptor_pdb = Path(target.receptor_pdb)
         for label, path in (
             ("receptor_pdbqt", receptor_pdbqt),
             ("receptor_pdb", receptor_pdb),
@@ -155,10 +195,10 @@ class BindingScorer:
                 (
                     str(receptor_pdbqt.resolve()),
                     str(receptor_pdb.resolve()),
-                    parameters.box_center,
-                    parameters.box_size,
-                    parameters.cpu,
-                    parameters.random_seed,
+                    target.box_center,
+                    target.box_size,
+                    runtime.cpu,
+                    runtime.random_seed,
                 )
             ).encode()
         ).hexdigest()
@@ -166,14 +206,14 @@ class BindingScorer:
             if signature not in self._contexts:
                 vina = Vina(
                     sf_name="vina",
-                    cpu=parameters.cpu,
-                    seed=parameters.random_seed,
+                    cpu=runtime.cpu,
+                    seed=runtime.random_seed,
                     verbosity=0,
                 )
                 vina.set_receptor(str(receptor_pdbqt))
                 vina.compute_vina_maps(
-                    center=list(parameters.box_center),
-                    box_size=list(parameters.box_size),
+                    center=list(target.box_center),
+                    box_size=list(target.box_size),
                 )
                 protein_rdkit = Chem.MolFromPDBFile(
                     str(receptor_pdb), removeHs=False, sanitize=False
@@ -196,7 +236,9 @@ class BindingScorer:
         parameters: BindingParameters,
         context: _DockingContext,
     ) -> BindingResult:
-        ligand = self._prepare_ligand(molecule)
+        ligand, lowest_free_energy, ensemble_size = self._prepare_ligand(
+            molecule, parameters
+        )
         preparation = MoleculePreparation()
         setups = preparation.prepare(ligand)
         if not setups:
@@ -227,21 +269,42 @@ class BindingScorer:
         if heavy_atom_count == 0:
             raise ValueError("ligand contains no heavy atoms")
         clogp = float(Crippen.MolLogP(Chem.RemoveHs(ligand)))
+        bound_energy = self._bound_pose_energy(pose_pdbqt)
+        internal_strain = max(0.0, bound_energy - lowest_free_energy)
+        off_target_scores: dict[str, float] = {}
+        for off_target in parameters.off_targets:
+            off_context = self._context(off_target, parameters)
+            off_target_scores[off_target.name] = self._dock_score(
+                pdbqt, off_context, parameters
+            )
+        best_off_target = min(off_target_scores.values()) if off_target_scores else None
         values, passed = evaluate_metrics(
             vina_score=vina_score,
             heavy_atom_count=heavy_atom_count,
             clogp=clogp,
             interactions=interactions,
             parameters=parameters,
+            internal_strain=internal_strain,
+            off_target_score=best_off_target,
+        )
+        values.update(
+            {
+                "free_conformer_count": float(ensemble_size),
+                "lowest_free_conformer_energy_kcal_mol": lowest_free_energy,
+                "bound_conformer_energy_kcal_mol": bound_energy,
+            }
         )
         return BindingResult(
             values=values,
             interactions=tuple(sorted(interactions)),
             passed=passed,
+            off_target_scores=off_target_scores,
         )
 
     @staticmethod
-    def _prepare_ligand(molecule: Molecule) -> Chem.Mol:
+    def _prepare_ligand(
+        molecule: Molecule, parameters: BindingParameters
+    ) -> tuple[Chem.Mol, float, int]:
         ligand = Chem.MolFromSmiles(molecule.smiles)
         if ligand is None:
             raise ValueError("RDKit could not parse SMILES")
@@ -249,13 +312,67 @@ class BindingScorer:
         embedding = AllChem.ETKDGv3()
         stable_seed = int(hashlib.sha256(molecule.smiles.encode()).hexdigest()[:8], 16)
         embedding.randomSeed = stable_seed & 0x7FFFFFFF
-        if AllChem.EmbedMolecule(ligand, embedding) != 0:
+        embedding.pruneRmsThresh = parameters.conformer_prune_rms_angstrom
+        conformers = list(
+            AllChem.EmbedMultipleConfs(
+                ligand,
+                numConfs=parameters.conformer_count,
+                params=embedding,
+            )
+        )
+        if not conformers:
             raise ValueError("RDKit could not generate a 3D conformer")
+        energies: list[tuple[float, int]] = []
         if AllChem.MMFFHasAllMoleculeParams(ligand):
-            AllChem.MMFFOptimizeMolecule(ligand, maxIters=500)
+            properties = AllChem.MMFFGetMoleculeProperties(ligand)
+            for conformer_id in conformers:
+                forcefield = AllChem.MMFFGetMoleculeForceField(
+                    ligand, properties, confId=conformer_id
+                )
+                forcefield.Minimize(maxIts=500)
+                energies.append((float(forcefield.CalcEnergy()), conformer_id))
         else:
-            AllChem.UFFOptimizeMolecule(ligand, maxIters=500)
-        return ligand
+            for conformer_id in conformers:
+                forcefield = AllChem.UFFGetMoleculeForceField(
+                    ligand, confId=conformer_id
+                )
+                forcefield.Minimize(maxIts=500)
+                energies.append((float(forcefield.CalcEnergy()), conformer_id))
+        lowest_energy, best_id = min(energies)
+        selected = Chem.Mol(ligand)
+        best_conformer = Chem.Conformer(ligand.GetConformer(best_id))
+        selected.RemoveAllConformers()
+        selected.AddConformer(best_conformer, assignId=True)
+        return selected, lowest_energy, len(conformers)
+
+    @staticmethod
+    def _bound_pose_energy(pose_pdbqt: str) -> float:
+        pdbqt_molecule = PDBQTMolecule(pose_pdbqt)
+        poses = RDKitMolCreate.from_pdbqt_mol(pdbqt_molecule)
+        pose = next((candidate for candidate in poses if candidate is not None), None)
+        if pose is None:
+            raise ValueError("Meeko could not reconstruct a bound pose")
+        if AllChem.MMFFHasAllMoleculeParams(pose):
+            properties = AllChem.MMFFGetMoleculeProperties(pose)
+            forcefield = AllChem.MMFFGetMoleculeForceField(pose, properties)
+        else:
+            forcefield = AllChem.UFFGetMoleculeForceField(pose)
+        return float(forcefield.CalcEnergy())
+
+    @staticmethod
+    def _dock_score(
+        pdbqt: str, context: _DockingContext, parameters: BindingParameters
+    ) -> float:
+        with context.lock:
+            context.vina.set_ligand_from_string(pdbqt)
+            context.vina.dock(
+                exhaustiveness=parameters.exhaustiveness,
+                n_poses=parameters.num_poses,
+            )
+            energies = context.vina.energies(n_poses=parameters.num_poses)
+            if len(energies) == 0:
+                raise ValueError("Vina returned no off-target poses")
+            return float(energies[0][0])
 
     @staticmethod
     def _fingerprint(

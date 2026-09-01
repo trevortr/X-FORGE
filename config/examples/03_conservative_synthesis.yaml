@@ -1,0 +1,39 @@
+# Lower-temperature beam search with a stringent nonlinear RA-Score/SAscore
+# gate. This retains the original synthesizability service as an optional tier.
+target: ../targets/ibuprofen_cox2.yaml
+
+iterations: 3
+candidates_per_iteration: 20
+top_k_feedback: 4
+
+generator:
+  strategy: beamsearch
+  temperature: 0.7
+  random_seed: 303
+
+pipeline:
+  - synthesizability:
+      power: -2
+      rascore_weight: 2.0
+      sascore_weight: 1.0
+      sascore_best: 1.0
+      sascore_worst: 10.0
+      gate_midpoint: 0.65
+      gate_steepness: 18.0
+      min_activation: 0.70
+
+admet_moo:
+  properties: null
+  selection:
+    method: hypervolume_contribution
+    reference_point:
+      bioavailability: 1.1
+      aqueous_solubility: 1.1
+      cyp3a4_inhibition: 1.1
+      herg_blocking: 1.1
+      dili: 1.1
+
+http:
+  timeout_seconds: 900
+  max_attempts: 5
+  backoff_seconds: 1

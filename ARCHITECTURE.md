@@ -1,103 +1,125 @@
 # X-FORGE Architecture
 
-This document describes the implemented X-FORGE service boundaries, contracts, data flow, deployment lifecycle, and major design decisions. The top-level [README](README.md) is the operational introduction.
+This document describes the implemented service boundaries, scientific data
+flow, evidence contracts, and deployment lifecycle. The top-level
+[README](README.md) is the operational introduction.
 
 ## 1. System overview
 
-X-FORGE is a synchronous feedback pipeline running on a private Docker Compose network. A one-shot orchestrator calls resident scientific APIs in sequence and writes durable checkpoints to a shared results directory.
+X-FORGE is a synchronous feedback pipeline on a private Docker Compose network.
+A one-shot orchestrator calls resident scientific APIs and writes durable JSON
+checkpoints to a shared result directory.
 
 ```text
-                                  configuration
-                        pipeline.yaml + services.yaml
-                                     │
-                                     ▼
-                            ┌─────────────────┐
-                            │  orchestrator   │
-                            │ one process/run │
-                            └────────┬────────┘
-                                     │ HTTP by Compose hostname
-                                     ▼
-┌───────────┐   ┌──────────────────┐   ┌──────────────────┐   ┌───────────┐
-│ generator │──▶│ synthesizability │──▶│     binding      │──▶│ admet-moo │
-│ REINVENT4 │   │ RA + SA, p = -2 │   │ prep/Vina/ProLIF │   │ Pareto MOO │
-└─────▲─────┘   └──────────────────┘   └──────────────────┘   └─────┬─────┘
-      └──────────────── selected feedback molecules ─────────────────┘
+                               pipeline + services + target YAML
+                                             |
+                                             v
+                                      +--------------+
+                                      | orchestrator |
+                                      | one run/job  |
+                                      +------+-------+
+                                             |
+                                             v
+ generator -> policy-scoring -> physchem -> admet-moo:/score
+  Tier 0         Tier 0          Tier 1        Tier 2
+                                             |
+                                             v
+                      binding -> physics -> admet-moo:/optimize
+                       Tier 3      Tier 4          Tier 5
+                                             |
+                                             +---- selected leads
+                                                   become new seeds
 
-              results/<run-name>/*.json
-                         │
-                         ▼
-              ┌────────────────────┐
-              │     visualizer     │
-              │ read-only web app  │
-              └────────────────────┘
+ results/<run-name>/*.json -> read-only visualizer
 ```
 
-No service imports another service's implementation. Pipeline envelopes and filter contracts are defined in `libs/schemas` and copied into the images that use them; generator and ADMET-MOO retain service-specific request and response models while preserving the shared molecule fields over HTTP.
+No scientific service imports another service's implementation. Shared
+`Molecule` and `ScoreRecord` envelopes live under `libs/schemas`; service-specific
+request options and metadata remain local.
 
 ### Deployment topology
 
-| Service | Compose hostname | Container/host port | Lifecycle |
+| Service | Compose hostname | Port | Lifecycle |
 |---|---|---:|---|
 | Generator | `generator` | `12000` | Resident API |
-| ADMET-MOO | `admet-moo` | `12001` | Resident API |
-| Synthesizability | `synthesizability` | `12002` | Resident API |
+| ADMET screen and MOO | `admet-moo` | `12001` | Resident API |
+| Legacy synthesizability | `synthesizability` | `12002` | Resident API |
+| Policy scoring | `policy-scoring` | `12003` | Resident API |
 | Binding | `binding` | `12004` | Resident API |
+| Physchem | `physchem` | `12005` | Resident API |
+| Physics evidence | `physics` | `12006` | Resident API |
+| Standalone ADMET-AI | `admet-ai` | `12007` | Optional resident API |
 | Orchestrator | `orchestrator` | None | One-shot job |
 | Visualizer | `visualizer` | `12010` | Resident read-only UI |
 
-Host ports bind only to `127.0.0.1`; internal calls use the Compose DNS names in `services.yaml`. Port `12003` is unassigned. The visualizer is intentionally absent from the scientific service registry.
+Host ports bind to `127.0.0.1`; internal calls use Compose DNS names. Compose
+health checks establish API readiness, while target- and run-specific files are
+validated on scoring requests.
 
-Compose waits for the four scientific APIs to report healthy before launching the orchestrator. Generator health verifies the prior and REINVENT runtime, ADMET health loads its predictor, and synthesizability health loads the real RA-Score artifact. Binding health currently verifies its installed scientific stack; target paths are validated when a scoring request creates a docking context.
-
-The sample Compose manifest declares all four APIs as orchestrator dependencies. Pipeline configuration controls which filter APIs are called, although an unused declared filter container may still start.
+`admet-ai` is a Docker-native standalone prediction endpoint retained for
+external consumers. It is not an orchestrator dependency: `admet-moo` still
+loads its own model for Tier 2 and Tier 5, so starting both containers consumes
+memory for two model instances.
 
 ## 2. Configuration model
 
 Configuration separates experimental intent from deployment location:
 
-- `config/pipeline.yaml` defines the target, filter order and parameters, iteration budget, generator options, ADMET decision policy, and HTTP retry behavior.
-- `config/services.yaml` maps logical service names to network URLs.
-- `config/targets/*.yaml` defines a target name and one or more starting molecules.
-- `targets/<target-id>/` contains prepared receptor and docking-box assets mounted read-only into the binding container.
+- `config/services.yaml` maps logical service names to internal URLs.
+- `config/pipeline.yaml` is the backward-compatible, runnable reference flow.
+- `config/pipeline.tiered.example.yaml` demonstrates the full Tier 0-5 flow.
+- `config/examples/` contains ten schema-validated workflow variants and an
+  evidence-requirement index.
+- `config/targets/*.yaml` contains target identity and starting hits.
+- `targets/` contains prepared structural assets mounted into `binding`.
+- `results/` contains checkpoints and external Tier 4 result evidence.
 
-The current pipeline shape is:
+The generator reward is optional. When enabled, `candidates_per_iteration` is
+multiplied by `generator.reward.pool_multiplier`; Tier 0 then sets `top_k` back
+to the original budget. Intermediate stages retain their declared order and use
+the existing generic filter contract.
+
+The full shape is:
 
 ```yaml
-target: targets/sildenafil_pde5.yaml
+generator:
+  reward:
+    service: policy_scoring
+    pool_multiplier: 4
+    parameters: {...}
 
 pipeline:
-  - synthesizability:
-      power: -2
-      rascore_weight: 1.0
-      sascore_weight: 1.0
-      gate_midpoint: 0.5
-      gate_steepness: 12.0
-      min_activation: 0.5
-  - binding:
-      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
-      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
-      box_center: [28.792, 30.186, 64.179]
-      box_size: [24.0, 24.0, 24.0]
-
-iterations: 5
-candidates_per_iteration: 5
-top_k_feedback: 2
+  - physchem: {...}
+  - admet_screen: {...}
+  - binding: {...}
+  - physics: {...}
 
 admet_moo:
-  properties: null
+  properties:
+    - binding_free_energy
+    - selectivity_gap
+    - metabolic_clearance
+    - herg_pic50
+    - synthetic_feasibility
   selection:
-    method: desirability
-    weights:
-      herg_blocking: 2.0
+    method: nsga3
+    nsga3_reference_partitions: 4
+    diversity:
+      enabled: true
+      tanimoto_distance_threshold: 0.4
 ```
 
-At orchestrator startup, Pydantic validates both YAML files, resolves the target relative to `config/`, verifies that every configured stage has a service URL, and rejects malformed stage or run names. An empty `pipeline: []` is valid and connects generation directly to ADMET-MOO.
+Startup validation resolves the target path, rejects malformed stages, and
+requires URLs for the generator, all configured filters, the optional reward,
+and final selector. Existing configurations without a reward or new services
+retain their previous behavior.
 
 ## 3. HTTP contracts
 
-### Filter contract
+### Shared scoring/filter contract
 
-Synthesizability and binding expose the same two-stage interface:
+`policy-scoring`, `physchem`, `admet-moo` Tier 2, `binding`, `physics`, and the
+legacy `synthesizability` service expose:
 
 ```text
 POST /score
@@ -105,43 +127,36 @@ POST /score
   response: {molecules: [Molecule with one appended ScoreRecord, ...]}
 
 POST /filter
-  request:  {molecules: [scored Molecule, ...], parameters: {...}}
+  request:  {molecules: [already-scored Molecule, ...], parameters: {...}}
   response: {passed: [...], rejected: [...]}
 ```
 
-`/score` calculates and annotates; `/filter` only partitions. The latter requires the molecule's latest score record to belong to that service, preventing stale or unscored data from being gated. Keeping the operations separate lets a score be retained before the molecule is removed from the active population and lets thresholds be re-examined without conflating calculation with orchestration.
+`/filter` partitions only and requires the latest score to belong to that
+service. This preserves rejected evidence and prevents a stale decision from
+being reused.
 
 ### Generator contract
 
 ```text
 POST /generate
-  request:
-    seeds, n_candidates_per_seed, strategy, temperature, random_seed
-  response:
-    molecules, requested, generated, model
+  request:  seeds, candidates per seed, strategy, temperature, random seed
+  response: generated SMILES, stable IDs, parents, similarity, NLL, model
 ```
 
-Each generated item includes its REINVENT-produced SMILES, stable ID, immediate parent SMILES/ID, Tanimoto similarity, and REINVENT negative log-likelihood when available.
-
-### ADMET-MOO contract
+### Final optimization contract
 
 ```text
 GET  /properties
 POST /optimize
-  request:
-    molecules, top_k, optional property keys, selection options
-  response:
-    all evaluated molecules, selected molecules, Pareto front,
-    selected method, and property metadata
+  request:  molecules, top_k, active properties, selection configuration
+  response: evaluated population, Front 1, selected portfolio, metadata
 ```
 
-Evaluated molecules contain raw predictions, minimization-form objectives, unit desirabilities, Pareto rank, selection score, and selected state. The service appends one `admet_moo` score record without deleting existing filter history.
+All services expose `/live` and `/health` endpoints.
 
-Scientific APIs expose `GET /live` for process liveness and `GET /health` for readiness. The visualizer exposes `GET /health` plus read-only run and graph APIs.
+## 4. Molecule provenance
 
-## 4. Molecule and provenance model
-
-The core schema is:
+The stable shared contract remains:
 
 ```python
 class ScoreRecord(BaseModel):
@@ -158,177 +173,255 @@ class Molecule(BaseModel):
     scores: list[ScoreRecord]
 ```
 
-The envelope permits extra service-specific metadata such as generator model details, binding interactions, synthesizability diagnostics, ADMET objectives, and selection state.
+Pydantic permits service-specific metadata such as desirabilities, alerts,
+routes, interactions, physics protocol IDs, Pareto rank, clusters, and synthesis
+batches. IDs are the first 16 hexadecimal characters of SHA-256 over the stored
+SMILES.
 
-IDs are the first 16 hexadecimal characters of SHA-256 over the stored SMILES. The shared schema only trims and validates a supplied one-line SMILES; it does not canonicalize it. REINVENT canonicalizes input representations during sampling, but X-FORGE hashes the exact candidate representation returned in REINVENT's output, so callers and future generators are responsible for consistent SMILES normalization.
+The orchestrator rejects service responses that change a scored population,
+overlap or omit a filter partition, rewrite score history, return duplicate
+generated IDs, or reference unknown parents. A ledger retains the newest
+append-only snapshot while iteration files retain historical occurrences and
+parent edges.
 
-Each generated snapshot stores its immediate `parent_id`. Repeated generation of the same molecular ID can produce extra parent edges across iteration artifacts; the top-level ledger keeps the latest append-only snapshot, while iteration checkpoints retain the historical occurrences needed to reconstruct the fuller graph.
+## 5. Scientific stages
 
-Score history is append-only because a mutable dictionary keyed by stage would discard repeated observations. The orchestrator enforces this invariant and also rejects service responses that:
+### 5.1 Tier 0: reward-guided generation
 
-- change the population during `/score`
-- return an incomplete or overlapping filter partition
-- reorder or rewrite the existing score prefix
-- return duplicate generated IDs or an unknown parent ID
+REINVENT4 v4.8 performs Mol2Mol sampling from the mounted prior. The optional
+`policy-scoring` stage derives five raw metrics:
 
-## 5. Scientific services
+- target affinity from a target-specific Morgan/ECFP kNN QSAR surrogate;
+- RDKit QED;
+- RDKit SAscore;
+- RDKit cLogP; and
+- molecular weight.
 
-### 5.1 Generator
-
-The generator wraps REINVENT4 v4.8 Mol2Mol sampling. The model prior is mounted at runtime from `models/reinvent/mol2mol_medium_similarity.prior`, allowing the large artifact to remain outside version control. Requests support multinomial or beam-search sampling, temperature, and a deterministic random seed.
-
-The orchestrator treats `candidates_per_iteration` as a total budget. Because the generator samples per seed, it divides that budget across the current seeds, rounds up, and trims excess candidates. REINVENT is configured to request unique output, and the orchestrator rejects duplicate returned IDs. It converts returned Tanimoto/NLL values into an append-only `generator` score record.
-
-### 5.2 Synthesizability
-
-For each valid RDKit molecule, the service calculates:
-
-- RA-Score from a pinned, checksum-verified upstream XGBoost artifact using count-based ECFP6 input.
-- RDKit SAscore.
-
-The values are converted to positive desirabilities:
-
-```text
-r = clamp(RA-Score, epsilon, 1)
-s = clamp((SA_worst - SAscore) / (SA_worst - SA_best), epsilon, 1)
-```
-
-They are combined using the configured positive weights and fixed power `p = -2`:
+Each configured curve is validated to have strictly increasing x coordinates
+and linearly interpolated continuously between its points. Outside the domain,
+the endpoint desirability is used. Positive weights are mandatory. The
+composite is evaluated stably in log space:
 
 ```text
-M = ((w_ra * r^-2 + w_sa * s^-2) / (w_ra + w_sa))^(-1/2)
-activation = sigmoid(steepness * (M - midpoint))
-passed = activation >= min_activation
+D = exp(sum_i(w_i log(d_i)) / sum_i(w_i))
 ```
 
-The negative power limits compensation by the stronger input. Raw metrics, normalized inputs, power mean, activation, success flag, and per-molecule errors are retained. A bad molecule is rejected without failing the whole batch.
+Any zero component makes the product and `D` zero. Thresholding and top-k are
+both supported. The score affects which molecules advance and therefore which
+leads seed the next iteration; no model weights are updated.
 
-### 5.3 Binding
+### 5.2 Tier 1: 2D, liability, and synthesis viability
 
-Binding is one composite service because each operation depends on the structure or pose created by the previous operation:
+`physchem` calculates molecular weight, cLogP, H-bond donors/acceptors, TPSA,
+rotatable bonds, formal charge, and heavy atom count. These implement Lipinski,
+Veber (`TPSA <= 140 A^2`, rotatable bonds `<= 10` by default), charge `[-1, 1]`,
+and configured heavy-atom gates.
 
-1. Parse SMILES, add hydrogens, generate an ETKDGv3 conformer, and minimize with MMFF or UFF.
-2. Prepare ligand PDBQT with Meeko.
-3. Dock with AutoDock Vina.
-4. Reconstruct returned poses and fingerprint protein-ligand contacts with ProLIF.
-5. Calculate Vina score, ligand efficiency, a Vina-derived pKd proxy, LipE proxy, interaction coverage, and geometric binding desirability.
-6. Apply configured affinity, efficiency, LipE, and critical-interaction gates.
+The service combines RDKit's PAINS A/B/C and Brenk filter catalogs with explicit
+SMARTS for acyl/sulfonyl halides, isocyanates, isothiocyanates, epoxides,
+aziridines, Michael acceptors, and aldehydes. Projects may allow covalent
+warheads explicitly. Basic-site alerts are always recorded; exact pKa bounds
+are gated when `require_pka_prediction` is enabled and the configured molecule
+field is present.
 
-Receptors and Vina maps are cached by target configuration. Access to each Vina context is locked because a Vina instance holds mutable ligand state. Preparation or docking failure rejects only the affected molecule; invalid target configuration fails the request.
+Route viability passes when at least one configured route source succeeds:
 
-The current PDE5 protocol is documented alongside its assets in [targets/pde5_1tbf/README.md](targets/pde5_1tbf/README.md).
+1. external route evidence meets confidence and step-count limits;
+2. all BRICS synthons occur in the supplied building-block catalog; or
+3. the product side of a configured reaction SMARTS matches.
 
-### 5.4 ADMET-MOO
+External route JSON is keyed by molecule ID or SMILES and may include
+`route_confidence`, `route_steps`, and `shared_intermediate_id`. X-FORGE does
+not claim that a substructure/template match is a complete retrosynthesis.
 
-ADMET-AI performs one batch prediction. Five registered `ADMETProperty` subclasses translate its output into objective and desirability values:
+### 5.3 Tier 2: ADMET surrogate gate
 
-| Property key | Goal |
-|---|---|
-| `bioavailability` | Maximize |
-| `aqueous_solubility` | Maximize |
-| `cyp3a4_inhibition` | Minimize |
-| `herg_blocking` | Minimize |
-| `dili` | Minimize |
+ADMET-AI performs one batch prediction. The screen consumes:
 
-New objectives are added by implementing the `ADMETProperty` interface and registering the class. The request may choose a subset of active properties.
+| Endpoint | Default source or evidence | Default interpretation |
+|---|---|---|
+| Solubility | `Solubility_AqSolDB` | require LogS `> -4` |
+| Microsomal clearance | `Clearance_Microsome_AZ` | optional upper gate |
+| Hepatocyte clearance | `Clearance_Hepatocyte_AZ` | optional upper gate |
+| Half-life | `Half_Life_Obach` | optional lower gate |
+| Permeability | `Caco2_Wang` or configured MDCK field | require native log Papp `> 0` |
+| P-gp | exact efflux field, else `Pgp_Broccatelli` | ratio `< 2.5` or risk gate |
+| hERG | exact pIC50 field, else `hERG` | pIC50 `< 5` or risk gate |
+| CYPs | Veith 3A4, 2D6, and 2C9 | probability upper gate |
 
-PyMOO `NonDominatedSorting` assigns ranks; this service is not running an NSGA-II evolutionary search. Only rank-zero molecules are considered by the requested final decision method:
+Existing numeric molecule fields and prior `ScoreRecord.values` override model
+columns. This allows validated exact endpoints to flow through the same data
+type without changing interfaces. Model risk classifications remain named as
+probabilities when no exact ratio or potency exists.
 
-- `knee_point`: PyMOO high-tradeoff points with deterministic distance-to-ideal fallback.
-- `desirability`: optionally weighted geometric mean of endpoint desirabilities.
-- `hypervolume_contribution`: unique normalized-front hypervolume contribution against a validated reference point.
+Continuous threshold-centered desirabilities form a minimization matrix for
+PyMOO non-dominated sorting. Hard-gate survivors are ordered by Pareto rank and
+geometric mean, then optionally capped by `max_candidates` before Tier 3.
+
+### 5.4 Tier 3: structure-based evaluation
+
+`binding` is one service because each operation consumes the structures or
+poses produced by the previous operation:
+
+1. ETKDGv3 embeds a configurable conformer ensemble.
+2. MMFF, or UFF fallback, minimizes every conformer.
+3. The lowest free-ligand-energy conformer is prepared by Meeko.
+4. Vina docks against the target and optional homologous off-targets.
+5. The best target pose is reconstructed and force-field evaluated.
+6. `max(0, E_bound - E_lowest_free)` is recorded as internal strain.
+7. ProLIF fingerprints contacts and checks essential interaction groups.
+
+The gate can combine Vina score, ligand efficiency, LipE proxy, critical
+interactions, internal strain, and requested target/off-target selectivity.
+Receptor/Vina contexts are cached and locked because they hold mutable ligand
+state. Failures reject only the affected molecule unless target configuration
+itself is invalid.
+
+### 5.5 Tier 4: high-fidelity evidence adapter
+
+High-fidelity free energies and MD observables require prepared chemical
+systems, protocols, trajectories, compute resources, and often licensed or
+separately installed engines. `physics` therefore validates and gates real
+result evidence rather than synthesizing it from lower-fidelity scores.
+
+Its JSON source is keyed by molecule ID or SMILES. Each entry requires:
+
+```json
+{
+  "method": "openfe_alchemical",
+  "binding_free_energy_kcal_mol": -9.2,
+  "ligand_rmsd_angstrom": 1.3,
+  "key_contact_persistence": 0.82
+}
+```
+
+Allowed methods are `fep_plus`, `mm_gbsa`, and `openfe_alchemical`. Optional
+fields include off-target free energy, uncertainty, residence-time proxy,
+protocol, engine version, and trajectory ID. Defaults require ligand RMSD
+strictly below `2.0 A` and key-contact persistence strictly above `0.70`.
+Missing, non-finite, or unapproved evidence produces a molecule-level rejection.
+
+When off-target energy is available, both signs are retained:
+
+```text
+requested gap    = target - off-target
+conventional gap = off-target - target
+```
+
+This preserves the requested downstream objective while making the sign choice
+auditable under the usual negative binding-free-energy convention.
+
+### 5.6 Tier 5: Pareto ranking, diversity, and batching
+
+The original five default `ADMETProperty` subclasses remain unchanged for
+backward compatibility. Five opt-in properties read evidence accumulated by
+the funnel:
+
+| Property | Goal | Evidence |
+|---|---|---|
+| `binding_free_energy` | minimize | Tier 4 target free energy |
+| `selectivity_gap` | maximize | requested target-minus-off-target gap |
+| `metabolic_clearance` | minimize | Tier 2 microsomal CLint |
+| `herg_pic50` | minimize | exact Tier 2 evidence |
+| `synthetic_feasibility` | minimize | `steps + 5(1 - confidence)` |
+
+All properties still inherit from `ADMETProperty`; no molecule or optimizer
+datatype was replaced.
+
+Physics-optional pipelines can select `docking_affinity` and
+`docking_selectivity_gap` instead. These consume Tier 3 Vina evidence and stay
+explicitly distinct from the higher-fidelity Tier 4 free-energy objectives.
+
+For `selection.method: nsga3`, PyMOO non-dominated sorting identifies Front 1.
+Normalized front points are associated with Das-Dennis reference directions,
+and sparse reference-direction niches are favored when ordering the fixed
+portfolio. This is NSGA-III-style survival selection over generated candidates,
+not an evolutionary optimizer that mutates molecules inside ADMET-MOO.
+
+When diversity is enabled, Front 1 Morgan fingerprints are clustered by Butina
+at the configured Tanimoto-distance threshold. A round-robin across clusters
+selects diverse representatives. `shared_intermediate_id` becomes the synthesis
+batch when available; the Murcko scaffold is the fallback batch key.
+
+The existing knee-point, weighted desirability, and hypervolume-contribution
+methods remain available.
 
 ## 6. Orchestration lifecycle
 
-The orchestrator is a batch job, not a server. One container invocation:
+One orchestrator invocation:
 
-1. Loads and validates configuration.
-2. Creates `results/<run-name>/run.json` with status `running`.
-3. Waits for required services with configured retries and backoff.
-4. Generates the per-iteration candidate budget.
-5. Calls `/score` then `/filter` for each configured stage.
-6. Sends survivors to ADMET-MOO and chooses at most `top_k_feedback` Pareto-front molecules.
-7. Writes an iteration checkpoint and refreshes `run.json`.
-8. Feeds selected molecules into the next iteration.
-9. Marks the run `completed` or `failed` and exits.
+1. validates configuration and writes a `running` `run.json`;
+2. waits for configured service readiness;
+3. generates either the normal budget or an oversampled Tier 0 pool;
+4. appends the generator score and records each `/score` and `/filter` result;
+5. stops cleanly if no candidates remain;
+6. calls Tier 5 with all upstream evidence still attached;
+7. writes the iteration atomically and feeds selected leads forward; and
+8. marks the run completed or failed and exits.
 
-Normal early termination occurs when generation returns no candidates, all candidates are filtered, or ADMET-MOO selects no leads. There is currently no convergence or Pareto-improvement stopping rule.
+Early completion occurs when generation is empty, all candidates are filtered,
+or final selection returns no lead. A run directory is set by
+`XFORGE_RUN_NAME`; otherwise the target slug and high-resolution UTC timestamp
+form the name.
 
-Each iteration artifact records input seeds, generated candidates, every filter's passed and rejected populations, survivors, all ADMET-evaluated molecules, the Pareto front, and selected feedback leads. `run.json` adds timestamps, status, termination reason, all iteration summaries, final selection, and a deduplicated molecule catalog.
+## 7. Visualization
 
-Writes use a temporary file followed by an atomic rename. A user-provided `XFORGE_RUN_NAME` selects the result subdirectory; otherwise the name is derived from the target slug and a high-resolution UTC timestamp. Explicit names should be unique: a pre-existing directory is reused and same-named checkpoint files are replaced.
+The visualizer mounts `results/` read-only. NetworkX builds lineage and
+Matplotlib produces SVG layers; browser JavaScript manages visibility. Initial
+hits appear first, clicking toggles descendants, whole-graph reveal is
+available, and cycles/secondary parents remain hidden until **Show all edges**
+is enabled. Leaf nodes are square.
 
-## 7. Visualization architecture
-
-The visualizer mounts `results/` read-only and never participates in orchestration. Its backend validates run names, loads result JSON, builds lineage with NetworkX, computes layout, and renders graph layers as Matplotlib SVG. The browser handles visibility and interaction:
-
-- only initial hits are visible at load
-- clicking a node reveals or hides its descendant branch
-- **Reveal whole graph** exposes all nodes
-- the default single-parent acyclic edge set suppresses cycles and additional parents
-- **Show all edges** restores every observed edge
-- leaf nodes are square
-- hover metadata is derived from the run artifact
-
-This split keeps chemistry/provenance parsing server-side while leaving graph exploration responsive and prevents result mutation through the UI.
-
-## 8. Models and reproducibility
+## 8. Reproducibility and evidence boundaries
 
 | Artifact | Handling |
 |---|---|
-| REINVENT Mol2Mol prior | Supplied locally, ignored by Git, mounted read-only |
-| REINVENT4 source/runtime | Built from the versioned Compose build argument (`v4.8`) |
-| RA-Score model | Downloaded from a pinned commit and checksum-verified at image build |
-| ADMET-AI model | Loaded by the ADMET-AI package during service readiness |
-| 1TBF receptor assets | Versioned under `targets/pde5_1tbf/`, mounted read-only |
+| REINVENT prior | supplied locally and mounted read-only |
+| REINVENT runtime | pinned Compose build reference |
+| RA-Score model | pinned and checksum-verified at image build |
+| ADMET-AI | package-pinned model runtime |
+| receptor assets | versioned target files mounted read-only |
+| affinity labels | target-specific Tier 0 configuration |
+| route evidence | external result file, catalog, or templates |
+| FEP/MD results | external result file with method/protocol provenance |
 
-Random seeds are configurable for REINVENT and Vina. RDKit conformer generation derives a stable seed from molecular SMILES. Exact numerical reproduction can still depend on container image, model, CPU/library implementation, and upstream prediction behavior.
+Random seeds are configurable for REINVENT and Vina; conformer seeds derive
+stably from SMILES. Numerical reproduction can still depend on model artifacts,
+CPU/library implementations, receptor preparation, and external protocols.
 
-## 9. Verification
+## 9. Known limitations
 
-The current repository has 58 passing tests:
+- X-FORGE is an integration and decision-support platform, not a validated
+  experimental drug-discovery system.
+- Tier population ranges describe funnel intent; the current synchronous JSON
+  APIs and single-host services should be chunked or replaced with distributed
+  workers for million-molecule campaigns.
+- Tier 0 is selection-guided Mol2Mol feedback and does not train REINVENT policy
+  weights.
+- Morgan kNN affinity predictions are only as useful as the configured labels
+  and their applicability domain.
+- PAINS/Brenk/warhead matches and pKa checks require expert review; alerts are
+  not universal activity or safety verdicts.
+- Building-block and reaction-template checks are rapid feasibility evidence,
+  not complete route planning.
+- ADMET-AI fallback values for P-gp and hERG are classification probabilities,
+  not efflux ratios or pIC50 measurements.
+- Tier 3 uses a rigid receptor and force-field strain approximation. Its LipE is
+  Vina-derived, not experimental.
+- Tier 4 does not launch commercial FEP+, OpenFE, MD, or MM-GBSA jobs. It
+  validates separately produced results so the pipeline never fabricates
+  high-fidelity evidence.
+- The requested target-minus-off-target gap and maximize direction are retained
+  exactly, although the opposite sign is conventional for negative free
+  energies.
+- There is no authentication, queue, distributed scheduler, or automatic resume.
 
-- generator: 11
-- synthesizability: 6
-- binding: 4
-- ADMET-MOO: 18
-- orchestrator: 10
-- visualizer: 6
-- top-level integration: 3
+## 10. Verification
 
-The top-level tests exercise deterministic fake-service loops, including the current five-iteration stage order. A separate real Compose run from Sildenafil against 1TBF completed all five iterations with 24 unique generated candidates, no recorded stage errors, and two final selected leads. That run verifies deployment and contract integration, not prospective scientific validity.
-
-## 10. Architecture decisions
-
-### Synchronous REST instead of a queue
-
-Current runs contain small populations on one Compose host. REST is inspectable, directly testable, and sufficient for the sequential data dependency. A queue and distributed workers would become useful if docking throughput or horizontal scaling became a requirement.
-
-### Configured filters, fixed generator and selector
-
-Generator and ADMET-MOO are the feedback loop's required endpoints. Intermediate filters use a common contract and ordered configuration. The internal binding operations remain fixed because exposing pose-dependent steps as freely reorderable services would create invalid combinations and move large transient pose artifacts through the shared envelope.
-
-### Append-only molecule events
-
-Provenance is part of the persisted data model rather than only application logs. Services append observations, and the orchestrator verifies previous history before accepting a response.
-
-### One-shot orchestrator
-
-A run has a clear beginning, durable checkpoints, terminal status, and process exit code. Keeping the coordinator as a batch job avoids an idle API container and makes Compose suitable for launching and observing a single experiment.
-
-### NetworkX/Matplotlib visualizer
-
-The server owns lineage normalization and deterministic SVG rendering; browser JavaScript owns expansion state and metadata interaction. A separate read-only service keeps result inspection independent of scientific execution.
-
-## 11. Known limitations
-
-- The system is a portfolio and integration platform, not a validated drug-discovery decision system.
-- The current 1TBF receptor removes catalytic zinc, magnesium, ordered waters, glycerol, and the crystallographic ligand. This makes a deterministic demonstration target, not a validated PDE5 docking protocol.
-- Binding uses a rigid receptor and retains scores/interactions in JSON, not reusable docked pose files.
-- The LipE value is a Vina-derived proxy, not an experimentally measured potency-based LipE.
-- RA-Score has the applicability domain and labeling assumptions of its upstream training data; it is not a retrosynthesis plan.
-- ADMET-AI predictions and desirability curves have not been calibrated for a specific discovery program.
-- Current default thresholds are permissive to exercise the complete loop.
-- Each service is single-container and CPU-oriented; binding serializes access to a target's Vina context.
-- There is no authentication, authorization, job queue, distributed scheduler, or automatic resume of interrupted runs.
-- Service URLs and localhost ports are suitable for a trusted local deployment, not direct public exposure.
+Unit and service suites cover desirability interpolation/geometric means,
+liability and route gates, ADMET endpoints and transition pruning, conformer
+strain/selectivity metrics, physics evidence validation, NSGA-III portfolio
+selection, diversity/batching, configuration compatibility, and append-only
+orchestration. The deterministic top-level Tier 0-5 integration test verifies
+oversampling and exact stage order without presenting mocked values as
+scientific validation.

@@ -1,0 +1,93 @@
+# High-fidelity template. The route and physics files must be populated by real
+# external tools for the generated molecule IDs/SMILES before this synchronous
+# pipeline reaches their respective stages.
+target: ../targets/sildenafil_pde5.yaml
+
+iterations: 2
+candidates_per_iteration: 100
+top_k_feedback: 20
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 1010
+  reward:
+    service: policy_scoring
+    pool_multiplier: 4
+    parameters:
+      # Illustrative value; replace with a calibrated target-affinity panel.
+      affinity_training_set:
+        - smiles: "CCCc1c2c(n(n1)C)C(=O)NC(=N2)c3cc(ccc3OCC)S(=O)(=O)N4CCN(CC4)C"
+          value: -9.0
+      affinity_k: 5
+      affinity_similarity_power: 2.0
+      min_composite_desirability: 0.15
+
+pipeline:
+  - physchem:
+      max_molecular_weight: 500
+      max_clogp: 5.0
+      max_hbond_donors: 5
+      max_hbond_acceptors: 10
+      max_tpsa: 140
+      max_rotatable_bonds: 10
+      min_formal_charge: -1
+      max_formal_charge: 1
+      min_heavy_atoms: 5
+      max_heavy_atoms: 70
+      allow_covalent_warheads: false
+      require_pka_prediction: false
+      require_retrosynthesis: true
+      route_results_path: /config/evidence/route_results.json
+      min_route_confidence: 0.6
+      max_route_steps: 6
+  - admet_screen:
+      min_log_s: -4.0
+      max_microsomal_clint: 50.0
+      max_hepatocyte_clint: 50.0
+      min_log_papp: 0.0
+      max_pgp_risk: 0.5
+      max_herg_risk: 0.5
+      max_cyp_risk: 0.5
+      max_candidates: 40
+  - binding:
+      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
+      box_center: [28.792, 30.186, 64.179]
+      box_size: [24.0, 24.0, 24.0]
+      exhaustiveness: 8
+      num_poses: 5
+      conformer_count: 30
+      max_internal_strain_kcal_mol: 5.0
+      max_vina_score: -6.0
+      min_ligand_efficiency: 0.15
+      critical_interactions: []
+  - physics:
+      results_path: /results/REPLACE_WITH_PHYSICS_RESULTS.json
+      allowed_methods: [fep_plus, mm_gbsa, openfe_alchemical]
+      max_binding_free_energy: -6.0
+      max_ligand_rmsd_angstrom: 2.0
+      min_key_contact_persistence: 0.70
+      require_off_target: true
+      top_k: 25
+
+admet_moo:
+  properties:
+    - binding_free_energy
+    - selectivity_gap
+    - metabolic_clearance
+    - herg_blocking
+    - synthetic_feasibility
+  selection:
+    method: nsga3
+    nsga3_reference_partitions: 6
+    diversity:
+      enabled: true
+      tanimoto_distance_threshold: 0.4
+      morgan_radius: 2
+      fingerprint_bits: 2048
+
+http:
+  timeout_seconds: 7200
+  max_attempts: 10
+  backoff_seconds: 2

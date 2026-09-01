@@ -1,0 +1,95 @@
+# Full Tier 0-5 configuration template. Replace the example affinity labels,
+# route evidence paths, off-target receptors, and physics result path with
+# project-specific validated inputs before use.
+target: targets/sildenafil_pde5.yaml
+
+iterations: 5
+candidates_per_iteration: 100
+top_k_feedback: 20
+
+generator:
+  strategy: multinomial
+  temperature: 1.0
+  random_seed: 42
+  reward:
+    service: policy_scoring
+    pool_multiplier: 4
+    parameters:
+      affinity_training_set:
+        # Supply multiple target-specific measured or validated QSAR labels.
+        - smiles: "REPLACE_WITH_TRAINING_SMILES"
+          value: -8.0
+      affinity_k: 5
+      affinity_similarity_power: 2.0
+      min_composite_desirability: 0.15
+
+pipeline:
+  - physchem:
+      max_molecular_weight: 500
+      max_clogp: 5
+      max_hbond_donors: 5
+      max_hbond_acceptors: 10
+      max_tpsa: 140
+      max_rotatable_bonds: 10
+      min_formal_charge: -1
+      max_formal_charge: 1
+      min_heavy_atoms: 5
+      max_heavy_atoms: 70
+      allow_covalent_warheads: false
+      require_pka_prediction: true
+      predicted_basic_pka_field: predicted_basic_pka
+      max_basic_pka: 10.5
+      require_retrosynthesis: true
+      route_results_path: /config/route_results.json
+      min_route_confidence: 0.5
+      max_route_steps: 6
+  - admet_screen:
+      min_log_s: -4.0
+      max_microsomal_clint: 50.0
+      max_hepatocyte_clint: 50.0
+      # Caco2_Wang units are log10(Papp / (10^-6 cm/s)).
+      min_log_papp: 0.0
+      max_pgp_efflux_ratio: 2.5
+      max_herg_pic50: 5.0
+      max_cyp_risk: 0.5
+      max_candidates: 1000
+  - binding:
+      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
+      box_center: [28.792, 30.186, 64.179]
+      box_size: [24.0, 24.0, 24.0]
+      conformer_count: 20
+      conformer_prune_rms_angstrom: 0.5
+      max_internal_strain_kcal_mol: 6.0
+      max_vina_score: -4.0
+      min_ligand_efficiency: 0.08
+      critical_interactions: []
+      off_targets: []
+  - physics:
+      results_path: /results/REPLACE_WITH_PHYSICS_RESULTS.json
+      allowed_methods: [openfe_alchemical, mm_gbsa]
+      max_ligand_rmsd_angstrom: 2.0
+      min_key_contact_persistence: 0.70
+      require_off_target: true
+      top_k: 100
+
+admet_moo:
+  properties:
+    - binding_free_energy
+    - selectivity_gap
+    - metabolic_clearance
+    - herg_pic50
+    - synthetic_feasibility
+  selection:
+    method: nsga3
+    nsga3_reference_partitions: 4
+    diversity:
+      enabled: true
+      tanimoto_distance_threshold: 0.4
+      morgan_radius: 2
+      fingerprint_bits: 2048
+
+http:
+  timeout_seconds: 3600
+  max_attempts: 10
+  backoff_seconds: 1

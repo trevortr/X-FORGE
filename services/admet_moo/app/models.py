@@ -10,6 +10,7 @@ SelectionMethod = Literal[
     "knee_point",
     "desirability",
     "hypervolume_contribution",
+    "nsga3",
 ]
 
 
@@ -41,10 +42,87 @@ class MoleculeInput(BaseModel):
         return self
 
 
+class ADMETScreenParameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    solubility_column: str = "Solubility_AqSolDB"
+    min_log_s: float = -4.0
+    microsomal_clearance_column: str | None = "Clearance_Microsome_AZ"
+    max_microsomal_clint: float | None = None
+    hepatocyte_clearance_column: str | None = "Clearance_Hepatocyte_AZ"
+    max_hepatocyte_clint: float | None = None
+    half_life_column: str | None = "Half_Life_Obach"
+    min_half_life: float | None = None
+    caco2_log_papp_column: str | None = "Caco2_Wang"
+    mdck_log_papp_column: str | None = None
+    # ADMET-AI Caco2_Wang is log10(Papp / (10^-6 cm/s)); > 0 means Papp > 10^-6.
+    min_log_papp: float = 0.0
+    pgp_efflux_ratio_column: str | None = None
+    max_pgp_efflux_ratio: float = 2.5
+    pgp_risk_column: str | None = "Pgp_Broccatelli"
+    max_pgp_risk: float = 0.5
+    herg_pic50_column: str | None = None
+    max_herg_pic50: float = 5.0
+    herg_risk_column: str | None = "hERG"
+    max_herg_risk: float = 0.5
+    cyp_risk_columns: dict[str, str] = Field(
+        default_factory=lambda: {
+            "cyp3a4": "CYP3A4_Veith",
+            "cyp2d6": "CYP2D6_Veith",
+            "cyp2c9": "CYP2C9_Veith",
+        }
+    )
+    max_cyp_risk: float = 0.5
+    max_candidates: int | None = Field(default=None, ge=1)
+
+    @field_validator(
+        "min_log_s",
+        "max_microsomal_clint",
+        "max_hepatocyte_clint",
+        "min_half_life",
+        "min_log_papp",
+        "max_pgp_efflux_ratio",
+        "max_pgp_risk",
+        "max_herg_pic50",
+        "max_herg_risk",
+        "max_cyp_risk",
+    )
+    @classmethod
+    def finite_screen_thresholds(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("ADMET screen thresholds must be finite")
+        return value
+
+
+class ADMETScreenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    molecules: list[MoleculeInput] = Field(min_length=1, max_length=100_000)
+    parameters: ADMETScreenParameters = Field(default_factory=ADMETScreenParameters)
+
+
+class ScreenScoreResponse(BaseModel):
+    molecules: list[MoleculeInput]
+
+
+class ScreenFilterResponse(BaseModel):
+    passed: list[MoleculeInput]
+    rejected: list[MoleculeInput]
+
+
+class DiversityOptions(BaseModel):
+    enabled: bool = False
+    tanimoto_distance_threshold: float = Field(default=0.4, gt=0, le=1)
+    morgan_radius: int = Field(default=2, ge=1, le=4)
+    fingerprint_bits: int = Field(default=2048, ge=128, le=8192)
+
+
 class SelectionOptions(BaseModel):
     method: SelectionMethod = "knee_point"
     weights: dict[str, float] | None = None
     reference_point: dict[str, float] | None = None
+    nsga3_reference_partitions: int = Field(default=4, ge=1, le=20)
+    diversity: DiversityOptions = Field(default_factory=DiversityOptions)
 
     @field_validator("weights")
     @classmethod
@@ -93,6 +171,8 @@ class EvaluatedMolecule(MoleculeInput):
     pareto_rank: int
     selection_score: float | None
     selected: bool
+    scaffold_cluster: int | None = None
+    synthesis_batch: str | None = None
 
 
 class OptimizeResponse(BaseModel):

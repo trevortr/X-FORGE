@@ -1,0 +1,75 @@
+# Exploratory Tier 0 sampling. Affinity values are placeholders demonstrating
+# the expected target-specific label format; replace them with calibrated data.
+target: ../targets/sildenafil_pde5.yaml
+
+iterations: 4
+candidates_per_iteration: 25
+top_k_feedback: 5
+
+generator:
+  strategy: multinomial
+  temperature: 1.4
+  random_seed: 202
+  reward:
+    service: policy_scoring
+    pool_multiplier: 6
+    parameters:
+      affinity_training_set:
+        - smiles: "CCCc1c2c(n(n1)C)C(=O)NC(=N2)c3cc(ccc3OCC)S(=O)(=O)N4CCN(CC4)C"
+          value: -9.0
+        - smiles: "CCO"
+          value: -4.0
+      affinity_k: 2
+      affinity_similarity_power: 2.5
+      curves:
+        target_affinity_surrogate:
+          points:
+            - {x: -12.0, desirability: 1.0}
+            - {x: -9.0, desirability: 1.0}
+            - {x: -6.0, desirability: 0.25}
+            - {x: -4.0, desirability: 0.0}
+        qed:
+          points:
+            - {x: 0.0, desirability: 0.0}
+            - {x: 0.4, desirability: 0.4}
+            - {x: 0.7, desirability: 1.0}
+            - {x: 1.0, desirability: 1.0}
+        sascore:
+          points:
+            - {x: 1.0, desirability: 1.0}
+            - {x: 3.0, desirability: 1.0}
+            - {x: 6.0, desirability: 0.2}
+            - {x: 10.0, desirability: 0.0}
+        clogp:
+          points:
+            - {x: -2.0, desirability: 0.0}
+            - {x: 1.0, desirability: 1.0}
+            - {x: 3.5, desirability: 1.0}
+            - {x: 5.5, desirability: 0.0}
+        molecular_weight:
+          points:
+            - {x: 100.0, desirability: 0.0}
+            - {x: 250.0, desirability: 1.0}
+            - {x: 500.0, desirability: 1.0}
+            - {x: 650.0, desirability: 0.0}
+      weights:
+        target_affinity_surrogate: 3.0
+        qed: 1.5
+        sascore: 1.0
+        clogp: 0.75
+        molecular_weight: 0.75
+      min_composite_desirability: 0.10
+
+pipeline: []
+
+admet_moo:
+  properties: null
+  selection:
+    method: desirability
+    weights:
+      herg_blocking: 2.0
+
+http:
+  timeout_seconds: 900
+  max_attempts: 5
+  backoff_seconds: 1

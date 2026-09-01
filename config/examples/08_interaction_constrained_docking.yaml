@@ -1,0 +1,56 @@
+# PDE5 contact-constrained example. Confirm residue numbering, protonation, and
+# accepted interaction types against the prepared receptor before scientific use.
+target: ../targets/sildenafil_pde5.yaml
+
+iterations: 3
+candidates_per_iteration: 30
+top_k_feedback: 5
+
+generator:
+  strategy: multinomial
+  temperature: 0.9
+  random_seed: 808
+
+pipeline:
+  - admet_screen:
+      min_log_s: -4.0
+      max_microsomal_clint: 50.0
+      min_log_papp: 0.0
+      max_pgp_risk: 0.5
+      max_herg_risk: 0.5
+      max_cyp_risk: 0.5
+      max_candidates: 15
+  - binding:
+      receptor_pdbqt: /targets/pde5_1tbf/1tbf_chain_a_receptor.pdbqt
+      receptor_pdb: /targets/pde5_1tbf/1tbf_chain_a_prepared.pdb
+      box_center: [28.792, 30.186, 64.179]
+      box_size: [22.0, 22.0, 22.0]
+      exhaustiveness: 8
+      num_poses: 5
+      energy_range: 4.0
+      conformer_count: 25
+      conformer_prune_rms_angstrom: 0.4
+      max_internal_strain_kcal_mol: 5.0
+      max_vina_score: -6.0
+      min_ligand_efficiency: 0.15
+      min_lipe_proxy: 1.0
+      critical_mode: all
+      critical_interactions:
+        - residue: GLN817.A
+          interaction_types: [HBDonor, HBAcceptor]
+
+admet_moo:
+  properties:
+    - docking_affinity
+    - aqueous_solubility
+    - herg_blocking
+  selection:
+    method: knee_point
+    diversity:
+      enabled: true
+      tanimoto_distance_threshold: 0.45
+
+http:
+  timeout_seconds: 2400
+  max_attempts: 8
+  backoff_seconds: 1

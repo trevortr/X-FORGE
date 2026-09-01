@@ -7,7 +7,7 @@ from uuid import uuid4
 from libs.schemas import Molecule, ScoreRecord
 
 from .client import GeneratedCandidate, ServiceCallError, ServiceClient
-from .config import RunConfiguration
+from .config import PipelineStage, RunConfiguration
 from .results import FilterStageResult, IterationResult, ResultWriter, RunResult
 
 logger = logging.getLogger(__name__)
@@ -80,6 +80,11 @@ class PipelineRunner:
 
         service_order = [
             "generator",
+            *(
+                [self.configuration.generator.reward.service]
+                if self.configuration.generator.reward is not None
+                else []
+            ),
             *(stage.name for stage in self.configuration.stages),
             "admet_moo",
         ]
@@ -141,9 +146,13 @@ class PipelineRunner:
             self.configuration.iterations,
             len(seeds),
         )
+        reward = self.configuration.generator.reward
+        generation_budget = self.configuration.candidates_per_iteration * (
+            reward.pool_multiplier if reward is not None else 1
+        )
         response = self.client.generate(
             seeds,
-            total_candidates=self.configuration.candidates_per_iteration,
+            total_candidates=generation_budget,
             strategy=self.configuration.generator.strategy,
             temperature=self.configuration.generator.temperature,
             random_seed=self.configuration.generator.random_seed + iteration_number - 1,
@@ -157,7 +166,27 @@ class PipelineRunner:
         )
         current = generated
         filter_results: list[FilterStageResult] = []
+        if reward is not None and current:
+            reward_stage = self._reward_stage(reward.service, reward.parameters)
+            scored = self.client.score(reward_stage, current)
+            for molecule in scored:
+                ledger.record(molecule)
+            filtered = self.client.filter(reward_stage, scored)
+            for molecule in [*filtered.passed, *filtered.rejected]:
+                ledger.record(molecule)
+            filter_results.append(
+                FilterStageResult(
+                    stage=reward_stage.name,
+                    parameters=reward_stage.parameters,
+                    input_count=len(current),
+                    passed=filtered.passed,
+                    rejected=filtered.rejected,
+                )
+            )
+            current = filtered.passed
         for stage in self.configuration.stages:
+            if not current:
+                break
             logger.info(
                 "iteration %d: %s scoring %d molecule(s)",
                 iteration_number,
@@ -228,6 +257,17 @@ class PipelineRunner:
             evaluated=optimized.molecules,
             pareto_front=pareto_front,
             selected=selected,
+        )
+
+    def _reward_stage(
+        self, name: str, parameters: dict[str, object]
+    ) -> PipelineStage:
+        return PipelineStage(
+            name=name,
+            parameters={
+                **parameters,
+                "top_k": self.configuration.candidates_per_iteration,
+            },
         )
 
     @staticmethod

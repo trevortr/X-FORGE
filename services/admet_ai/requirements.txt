@@ -1,0 +1,5 @@
+admet-ai==2.0.1
+fastapi==0.141.1
+python-multipart==0.0.22
+rdkit>=2025.9.5,<2026
+uvicorn[standard]==0.52.4

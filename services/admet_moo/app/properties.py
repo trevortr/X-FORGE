@@ -29,6 +29,7 @@ class ADMETProperty(ABC):
     units: str
     goal: Goal
     desirability_description: str
+    default: bool = True
 
     def prediction(self, predictions: dict[str, float]) -> float:
         try:
@@ -141,6 +142,132 @@ class DILIProperty(ADMETProperty):
         return 1.0 - _clamp(_require_finite(value, self.key))
 
 
+class BindingFreeEnergyProperty(ADMETProperty):
+    key = "binding_free_energy"
+    source_column = "binding_free_energy_kcal_mol"
+    display_name = "Target binding free energy"
+    category = "binding"
+    units = "kcal/mol"
+    goal: Goal = "minimize"
+    desirability_description = "Linear improvement from 0 at -4 to 1 at -12 kcal/mol"
+    default = False
+
+    def objective(self, value: float) -> float:
+        return _require_finite(value, self.key)
+
+    def desirability(self, value: float) -> float:
+        return _clamp((-_require_finite(value, self.key) - 4.0) / 8.0)
+
+
+class DockingAffinityProperty(ADMETProperty):
+    key = "docking_affinity"
+    source_column = "vina_score"
+    display_name = "Target docking score"
+    category = "binding"
+    units = "kcal/mol"
+    goal: Goal = "minimize"
+    desirability_description = "Linear improvement from 0 at -4 to 1 at -12 kcal/mol"
+    default = False
+
+    def objective(self, value: float) -> float:
+        return _require_finite(value, self.key)
+
+    def desirability(self, value: float) -> float:
+        return _clamp((-_require_finite(value, self.key) - 4.0) / 8.0)
+
+
+class SelectivityGapProperty(ADMETProperty):
+    key = "selectivity_gap"
+    source_column = "selectivity_gap_target_minus_offtarget"
+    display_name = "Target-minus-off-target selectivity gap"
+    category = "selectivity"
+    units = "kcal/mol"
+    goal: Goal = "maximize"
+    desirability_description = "Linear ramp from 0 at -5 to 1 at 5 kcal/mol"
+    default = False
+
+    def objective(self, value: float) -> float:
+        return -_require_finite(value, self.key)
+
+    def desirability(self, value: float) -> float:
+        return _clamp((_require_finite(value, self.key) + 5.0) / 10.0)
+
+
+class DockingSelectivityGapProperty(ADMETProperty):
+    key = "docking_selectivity_gap"
+    source_column = "selectivity_gap_target_minus_offtarget"
+    display_name = "Target-minus-off-target docking gap"
+    category = "selectivity"
+    units = "kcal/mol"
+    goal: Goal = "maximize"
+    desirability_description = "Linear ramp from 0 at -5 to 1 at 5 kcal/mol"
+    default = False
+
+    def objective(self, value: float) -> float:
+        return -_require_finite(value, self.key)
+
+    def desirability(self, value: float) -> float:
+        return _clamp((_require_finite(value, self.key) + 5.0) / 10.0)
+
+
+class MetabolicClearanceProperty(ADMETProperty):
+    key = "metabolic_clearance"
+    source_column = "microsomal_clint"
+    display_name = "Microsomal intrinsic clearance"
+    category = "metabolism"
+    units = "model-native"
+    goal: Goal = "minimize"
+    desirability_description = "Reciprocal penalty relative to 50 model-native units"
+    default = False
+
+    def objective(self, value: float) -> float:
+        return _require_finite(value, self.key)
+
+    def desirability(self, value: float) -> float:
+        return 1.0 / (1.0 + max(0.0, _require_finite(value, self.key)) / 50.0)
+
+
+class HERGPIC50Property(ADMETProperty):
+    key = "herg_pic50"
+    source_column = "herg_pic50"
+    display_name = "hERG pIC50"
+    category = "toxicity"
+    units = "pIC50"
+    goal: Goal = "minimize"
+    desirability_description = "Linear decline from 1 at pIC50 3 to 0 at pIC50 7"
+    default = False
+
+    def objective(self, value: float) -> float:
+        return _require_finite(value, self.key)
+
+    def desirability(self, value: float) -> float:
+        return _clamp((7.0 - _require_finite(value, self.key)) / 4.0)
+
+
+class SyntheticFeasibilityProperty(ADMETProperty):
+    key = "synthetic_feasibility"
+    source_column = "route_steps+route_confidence"
+    display_name = "Synthetic route burden"
+    category = "synthesis"
+    units = "composite"
+    goal: Goal = "minimize"
+    desirability_description = "Route steps penalized by lack of route confidence"
+    default = False
+
+    def prediction(self, predictions: dict[str, float]) -> float:
+        steps = _require_finite(predictions["route_steps"], "route_steps")
+        confidence = _clamp(
+            _require_finite(predictions["route_confidence"], "route_confidence")
+        )
+        return steps + 5.0 * (1.0 - confidence)
+
+    def objective(self, value: float) -> float:
+        return _require_finite(value, self.key)
+
+    def desirability(self, value: float) -> float:
+        return _clamp(1.0 - _require_finite(value, self.key) / 12.0)
+
+
 class ADMETPropertyRegistry:
     def __init__(self) -> None:
         self._property_types: dict[str, type[ADMETProperty]] = {}
@@ -154,7 +281,11 @@ class ADMETPropertyRegistry:
         self._property_types[key] = property_type
 
     def create(self, keys: list[str] | None = None) -> list[ADMETProperty]:
-        requested = keys if keys is not None else list(self._property_types)
+        requested = keys if keys is not None else [
+            key
+            for key, property_type in self._property_types.items()
+            if property_type.default
+        ]
         unknown = sorted(set(requested) - self._property_types.keys())
         if unknown:
             raise KeyError(f"unknown ADMET properties: {', '.join(unknown)}")
@@ -165,6 +296,13 @@ class ADMETPropertyRegistry:
         return [self._property_types[key]() for key in requested]
 
     def __iter__(self) -> Iterator[ADMETProperty]:
+        return (
+            property_type()
+            for property_type in self._property_types.values()
+            if property_type.default
+        )
+
+    def all(self) -> Iterator[ADMETProperty]:
         return (property_type() for property_type in self._property_types.values())
 
 
@@ -175,5 +313,12 @@ for _property_type in (
     CYP3A4InhibitionProperty,
     HERGProperty,
     DILIProperty,
+    BindingFreeEnergyProperty,
+    DockingAffinityProperty,
+    SelectivityGapProperty,
+    DockingSelectivityGapProperty,
+    MetabolicClearanceProperty,
+    HERGPIC50Property,
+    SyntheticFeasibilityProperty,
 ):
     property_registry.register(_property_type)

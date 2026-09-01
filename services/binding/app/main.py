@@ -58,6 +58,7 @@ def _annotate(request: BindingRequest, results: list[BindingResult]) -> ScoreRes
         binding = {
             **result.values,
             "interactions": list(result.interactions),
+            "off_target_scores": result.off_target_scores,
             "error": result.error,
         }
         annotated.append(

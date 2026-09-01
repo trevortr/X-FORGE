@@ -15,6 +15,34 @@ class CriticalInteraction(BaseModel):
     interaction_types: list[str] = Field(min_length=1)
 
 
+class OffTargetParameters(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    receptor_pdbqt: str = Field(min_length=1)
+    receptor_pdb: str = Field(min_length=1)
+    box_center: tuple[float, float, float]
+    box_size: tuple[float, float, float]
+
+    @field_validator("box_center", "box_size")
+    @classmethod
+    def coordinates_must_be_finite(
+        cls, value: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        if any(not math.isfinite(component) for component in value):
+            raise ValueError("off-target box coordinates must be finite")
+        return value
+
+    @field_validator("box_size")
+    @classmethod
+    def box_dimensions_must_be_positive(
+        cls, value: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        if any(component <= 0 for component in value):
+            raise ValueError("off-target box dimensions must be greater than zero")
+        return value
+
+
 class BindingParameters(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -34,6 +62,11 @@ class BindingParameters(BaseModel):
     critical_mode: Literal["all", "any"] = "all"
     interaction_types: list[str] | None = None
     temperature_kelvin: float = Field(default=298.15, gt=0)
+    conformer_count: int = Field(default=20, ge=1, le=200)
+    conformer_prune_rms_angstrom: float = Field(default=0.5, gt=0)
+    max_internal_strain_kcal_mol: float = Field(default=6.0, gt=0)
+    off_targets: list[OffTargetParameters] = Field(default_factory=list)
+    min_selectivity_gap_target_minus_offtarget: float | None = None
 
     @field_validator("box_center", "box_size")
     @classmethod
@@ -59,6 +92,9 @@ class BindingParameters(BaseModel):
         "min_lipe_proxy",
         "energy_range",
         "temperature_kelvin",
+        "conformer_prune_rms_angstrom",
+        "max_internal_strain_kcal_mol",
+        "min_selectivity_gap_target_minus_offtarget",
     )
     @classmethod
     def thresholds_must_be_finite(cls, value: float | None) -> float | None:
