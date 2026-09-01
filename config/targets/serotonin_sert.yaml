@@ -1,0 +1,5 @@
+name: Serotonin - human SERT central site (7LIA)
+seeds:
+  - smiles: "NCCc1c[nH]c2ccc(O)cc12"
+    id: serotonin
+
