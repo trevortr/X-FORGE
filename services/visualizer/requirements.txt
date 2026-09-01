@@ -1,4 +1,5 @@
 fastapi==0.141.1
 matplotlib==3.11.1
 networkx==3.6.1
+rdkit==2025.9.3
 uvicorn[standard]==0.52.4

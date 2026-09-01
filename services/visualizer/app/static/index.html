@@ -4,8 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>X-FORGE Run Explorer</title>
-    <link rel="stylesheet" href="/static/styles.css" />
-    <script type="module" src="/static/app.js"></script>
+    <link rel="stylesheet" href="/static/styles.css?v=20260901.2" />
+    <script type="module" src="/static/app.js?v=20260901.2"></script>
   </head>
   <body>
     <header>
@@ -31,6 +31,10 @@
               <input id="show-all-edges" type="checkbox" disabled />
               Show all edges
             </label>
+            <label class="edge-toggle" for="show-labels">
+              <input id="show-labels" type="checkbox" disabled />
+              Show SMILES labels
+            </label>
             <button id="reveal-all" type="button" disabled>Reveal whole graph</button>
             <button id="reset" type="button" disabled>Reset graph</button>
           </div>
@@ -44,7 +48,26 @@
           <span><i class="root-key"></i> Initial hit</span>
           <span><i class="child-key"></i> Has children</span>
           <span><i class="leaf-key"></i> Leaf molecule</span>
-          <span class="instruction">Click to expand or collapse · Hover for details</span>
+          <div class="viewport-controls" aria-label="Graph viewport controls">
+            <div class="control-group" aria-label="Zoom controls">
+              <button id="zoom-out" type="button" title="Zoom out" disabled>− Zoom</button>
+              <button id="zoom-fit" type="button" disabled>Fit</button>
+              <output id="zoom-value">100% · 1.0×1.0</output>
+              <button id="zoom-in" type="button" title="Zoom in" disabled>+ Zoom</button>
+            </div>
+            <div class="control-group pan-controls" aria-label="Pan controls">
+              <button id="pan-left" type="button" title="Pan left" aria-label="Pan left" disabled>←</button>
+              <button id="pan-up" type="button" title="Pan up" aria-label="Pan up" disabled>↑</button>
+              <button id="pan-down" type="button" title="Pan down" aria-label="Pan down" disabled>↓</button>
+              <button id="pan-right" type="button" title="Pan right" aria-label="Pan right" disabled>→</button>
+            </div>
+            <div class="control-group" aria-label="Canvas expansion controls">
+              <button id="expand-horizontal" type="button" title="Add horizontal spacing" disabled>↔ Wider</button>
+              <button id="expand-vertical" type="button" title="Add vertical spacing" disabled>↕ Taller</button>
+              <button id="reset-view" type="button" disabled>Reset view</button>
+            </div>
+          </div>
+          <span class="instruction">Click to expand or collapse · Hover for full SMILES and scores</span>
         </div>
       </section>
 

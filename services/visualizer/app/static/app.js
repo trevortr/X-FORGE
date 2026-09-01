@@ -4,6 +4,18 @@ const ui = {
   reset: document.querySelector("#reset"),
   revealAll: document.querySelector("#reveal-all"),
   showAllEdges: document.querySelector("#show-all-edges"),
+  showLabels: document.querySelector("#show-labels"),
+  zoomOut: document.querySelector("#zoom-out"),
+  zoomFit: document.querySelector("#zoom-fit"),
+  zoomIn: document.querySelector("#zoom-in"),
+  zoomValue: document.querySelector("#zoom-value"),
+  panLeft: document.querySelector("#pan-left"),
+  panUp: document.querySelector("#pan-up"),
+  panDown: document.querySelector("#pan-down"),
+  panRight: document.querySelector("#pan-right"),
+  expandHorizontal: document.querySelector("#expand-horizontal"),
+  expandVertical: document.querySelector("#expand-vertical"),
+  resetView: document.querySelector("#reset-view"),
   target: document.querySelector("#target"),
   status: document.querySelector("#status"),
   iterations: document.querySelector("#iterations"),
@@ -17,6 +29,10 @@ let runs = [];
 let selectedRun;
 let expanded = new Set();
 let renderVersion = 0;
+let zoom = 1;
+let horizontalScale = 1;
+let verticalScale = 1;
+let canvasSize = { width: 800, height: 520 };
 
 async function fetchJson(url) {
   const response = await fetch(url, { cache: "no-store" });
@@ -71,6 +87,10 @@ async function selectRun(runName) {
   ui.revealAll.disabled = false;
   ui.showAllEdges.disabled = false;
   ui.showAllEdges.checked = false;
+  ui.showLabels.disabled = false;
+  ui.showLabels.checked = false;
+  resetViewportState();
+  setViewportControlsDisabled(false);
   clearInspector();
   await renderGraph();
 }
@@ -83,6 +103,9 @@ async function renderGraph(showAll = false) {
     for (const moleculeId of [...expanded].sort()) query.append("expanded", moleculeId);
     if (showAll) query.set("show_all", "true");
     if (ui.showAllEdges.checked) query.set("show_all_edges", "true");
+    if (ui.showLabels.checked) query.set("show_labels", "true");
+    if (horizontalScale !== 1) query.set("horizontal_scale", horizontalScale.toString());
+    if (verticalScale !== 1) query.set("vertical_scale", verticalScale.toString());
     const suffix = query.size ? `?${query}` : "";
     const view = await fetchJson(
       `/api/runs/${encodeURIComponent(selectedRun.name)}/graph${suffix}`,
@@ -97,6 +120,11 @@ async function renderGraph(showAll = false) {
     svg.removeAttribute("height");
     svg.classList.add("lineage-svg");
     ui.graph.replaceChildren(document.importNode(svg, true));
+    canvasSize = {
+      width: view.canvas_width ?? 800,
+      height: view.canvas_height ?? 520,
+    };
+    applyZoom();
     ui.visible.textContent = `${view.visible_count} / ${view.total_count}`;
     expanded = new Set(
       view.nodes.filter((node) => node.expanded && node.has_children).map((node) => node.id),
@@ -109,6 +137,85 @@ async function renderGraph(showAll = false) {
   } finally {
     ui.graph.classList.remove("loading");
   }
+}
+
+function setViewportControlsDisabled(disabled) {
+  for (const control of [
+    ui.zoomOut,
+    ui.zoomFit,
+    ui.zoomIn,
+    ui.panLeft,
+    ui.panUp,
+    ui.panDown,
+    ui.panRight,
+    ui.expandHorizontal,
+    ui.expandVertical,
+    ui.resetView,
+  ]) {
+    control.disabled = disabled;
+  }
+}
+
+function setZoom(value) {
+  zoom = Math.min(3, Math.max(0.15, value));
+  applyZoom();
+}
+
+function fitGraph() {
+  const availableWidth = Math.max(ui.graph.clientWidth - 8, 1);
+  const availableHeight = Math.max(ui.graph.clientHeight - 8, 1);
+  setZoom(Math.min(
+    availableWidth / canvasSize.width,
+    availableHeight / canvasSize.height,
+  ));
+}
+
+function panGraph(horizontal, vertical) {
+  ui.graph.scrollBy({
+    left: horizontal * ui.graph.clientWidth * 0.65,
+    top: vertical * ui.graph.clientHeight * 0.65,
+    behavior: "smooth",
+  });
+}
+
+async function expandCanvas(axis) {
+  const oldWidth = canvasSize.width * zoom;
+  const oldHeight = canvasSize.height * zoom;
+  const centerX = (ui.graph.scrollLeft + ui.graph.clientWidth / 2) / oldWidth;
+  const centerY = (ui.graph.scrollTop + ui.graph.clientHeight / 2) / oldHeight;
+  if (axis === "horizontal") horizontalScale = Math.min(4, horizontalScale * 1.25);
+  if (axis === "vertical") verticalScale = Math.min(4, verticalScale * 1.25);
+  await renderGraph();
+  window.requestAnimationFrame(() => {
+    const newWidth = canvasSize.width * zoom;
+    const newHeight = canvasSize.height * zoom;
+    ui.graph.scrollTo({
+      left: centerX * newWidth - ui.graph.clientWidth / 2,
+      top: centerY * newHeight - ui.graph.clientHeight / 2,
+    });
+  });
+}
+
+function resetViewportState() {
+  zoom = 1;
+  horizontalScale = 1;
+  verticalScale = 1;
+  applyZoom();
+  ui.graph.scrollTo({ left: 0, top: 0 });
+}
+
+async function resetViewport() {
+  const needsRender = horizontalScale !== 1 || verticalScale !== 1;
+  resetViewportState();
+  if (selectedRun && needsRender) await renderGraph();
+}
+
+function applyZoom() {
+  ui.zoomValue.textContent = `${Math.round(zoom * 100)}% · ${horizontalScale.toFixed(1)}×${verticalScale.toFixed(1)}`;
+  const svg = ui.graph.querySelector("svg");
+  if (!svg) return;
+  svg.style.width = `${Math.round(canvasSize.width * zoom)}px`;
+  svg.style.height = `${Math.round(canvasSize.height * zoom)}px`;
 }
 
 function bindNodes(nodes) {
@@ -155,6 +262,7 @@ function showInspector(node) {
   const fragment = document.createDocumentFragment();
   fragment.append(textElement("p", node.is_root ? "Initial hit" : "Generated molecule", "kicker"));
   fragment.append(textElement("h2", molecule.smiles ?? node.id));
+  fragment.append(structurePreview(molecule.smiles, node.id));
   const facts = document.createElement("dl");
   facts.className = "facts";
   addFact(facts, "Molecule ID", node.id);
@@ -182,6 +290,24 @@ function showInspector(node) {
     fragment.append(card);
   }
   ui.inspector.replaceChildren(fragment);
+}
+
+function structurePreview(smiles, moleculeId) {
+  const preview = document.createElement("figure");
+  preview.className = "structure-preview";
+  if (!smiles) {
+    preview.append(textElement("p", "No SMILES available for depiction.", "quiet"));
+    return preview;
+  }
+  const image = document.createElement("img");
+  image.alt = `2D molecular structure for ${moleculeId}`;
+  image.decoding = "async";
+  image.src = `/api/depict?smiles=${encodeURIComponent(smiles)}`;
+  image.addEventListener("error", () => {
+    preview.replaceChildren(textElement("p", "Structure depiction unavailable.", "quiet"));
+  });
+  preview.append(image);
+  return preview;
 }
 
 function clearInspector() {
@@ -218,9 +344,22 @@ ui.select.addEventListener("change", () => selectRun(ui.select.value));
 ui.refresh.addEventListener("click", loadRuns);
 ui.revealAll.addEventListener("click", () => renderGraph(true));
 ui.showAllEdges.addEventListener("change", () => renderGraph());
+ui.showLabels.addEventListener("change", () => renderGraph());
+ui.zoomOut.addEventListener("click", () => setZoom(zoom / 1.25));
+ui.zoomIn.addEventListener("click", () => setZoom(zoom * 1.25));
+ui.zoomFit.addEventListener("click", fitGraph);
+ui.panLeft.addEventListener("click", () => panGraph(-1, 0));
+ui.panUp.addEventListener("click", () => panGraph(0, -1));
+ui.panDown.addEventListener("click", () => panGraph(0, 1));
+ui.panRight.addEventListener("click", () => panGraph(1, 0));
+ui.expandHorizontal.addEventListener("click", () => expandCanvas("horizontal"));
+ui.expandVertical.addEventListener("click", () => expandCanvas("vertical"));
+ui.resetView.addEventListener("click", resetViewport);
 ui.reset.addEventListener("click", () => {
   expanded = new Set();
+  resetViewportState();
   clearInspector();
   renderGraph();
 });
+window.addEventListener("resize", applyZoom);
 loadRuns();

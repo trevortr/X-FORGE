@@ -28,7 +28,7 @@ def _dom_token(molecule_id: str) -> str:
     return f"mol-{encoded}"
 
 
-def _short_label(smiles: str, maximum: int = 24) -> str:
+def _short_label(smiles: str, maximum: int = 18) -> str:
     return smiles if len(smiles) <= maximum else f"{smiles[: maximum - 1]}…"
 
 
@@ -239,6 +239,9 @@ def render_svg(
     run_graph: MoleculeRunGraph,
     expanded: frozenset[str],
     show_all_edges: bool = False,
+    show_labels: bool = False,
+    horizontal_scale: float = 1.0,
+    vertical_scale: float = 1.0,
 ) -> dict[str, Any]:
     visible = run_graph.visible_nodes(expanded)
     edges = run_graph.visible_edges(visible, expanded, show_all_edges)
@@ -247,8 +250,30 @@ def render_svg(
     layer_counts: defaultdict[int, int] = defaultdict(int)
     for layer in layers:
         layer_counts[layer] += 1
-    width = min(18.0, max(7.0, 4.0 + len(set(layers)) * 2.2))
-    height = min(13.0, max(4.8, 3.2 + max(layer_counts.values()) * 0.72))
+    layer_count = len(set(layers))
+    largest_layer = max(layer_counts.values())
+    width = max(8.0, 3.2 + layer_count * (2.4 if show_labels else 1.7))
+    height = max(
+        5.2,
+        2.8 + largest_layer * (0.48 if show_labels else 0.28),
+    )
+    width *= horizontal_scale
+    height *= vertical_scale
+    if len(visible) > 150:
+        node_size = 145
+        root_size = 220
+        arrow_size = 8
+        edge_width = 0.72
+    elif len(visible) > 60:
+        node_size = 220
+        root_size = 310
+        arrow_size = 10
+        edge_width = 0.9
+    else:
+        node_size = 520
+        root_size = 680
+        arrow_size = 16
+        edge_width = 1.35
 
     with (
         _RENDER_LOCK,
@@ -266,10 +291,10 @@ def render_svg(
             ax=axes,
             arrows=True,
             arrowstyle="-|>",
-            arrowsize=16,
+            arrowsize=arrow_size,
             edge_color="#94a3b8",
-            node_size=1_150,
-            width=1.35,
+            node_size=root_size,
+            width=edge_width,
             connectionstyle="arc3,rad=0.06",
             min_source_margin=8,
             min_target_margin=12,
@@ -284,7 +309,7 @@ def render_svg(
             node = axes.scatter(
                 [x],
                 [y],
-                s=680 if is_root else 520,
+                s=root_size if is_root else node_size,
                 marker="s" if is_leaf else ("D" if is_root else "o"),
                 c=["#fbbf24" if is_root else _COLORS[max(layer - 1, 0) % len(_COLORS)]],
                 edgecolors="#334155",
@@ -293,24 +318,25 @@ def render_svg(
             )
             dom_id = _dom_token(molecule_id)
             node.set_gid(f"node-{dom_id}")
-            label = axes.annotate(
-                _short_label(str(molecule.get("smiles", molecule_id))),
-                (x, y),
-                xytext=(0, -23 if is_root else -20),
-                textcoords="offset points",
-                ha="center",
-                va="top",
-                fontsize=8.3,
-                color="#0f172a",
-                bbox={
-                    "boxstyle": "round,pad=0.24",
-                    "facecolor": "#ffffff",
-                    "edgecolor": "#e2e8f0",
-                    "alpha": 0.96,
-                },
-                zorder=4,
-            )
-            label.set_gid(f"label-{dom_id}")
+            if show_labels:
+                label = axes.annotate(
+                    _short_label(str(molecule.get("smiles", molecule_id))),
+                    (x, y),
+                    xytext=(0, -23 if is_root else -20),
+                    textcoords="offset points",
+                    ha="center",
+                    va="top",
+                    fontsize=7.8,
+                    color="#0f172a",
+                    bbox={
+                        "boxstyle": "round,pad=0.2",
+                        "facecolor": "#ffffff",
+                        "edgecolor": "#e2e8f0",
+                        "alpha": 0.94,
+                    },
+                    zorder=4,
+                )
+                label.set_gid(f"label-{dom_id}")
 
         xs = [run_graph.positions[node_id][0] for node_id in visible]
         ys = [run_graph.positions[node_id][1] for node_id in visible]
@@ -347,6 +373,11 @@ def render_svg(
         "total_edge_count": len(available_edges),
         "all_edge_count": run_graph.graph.number_of_edges(),
         "show_all_edges": show_all_edges,
+        "show_labels": show_labels,
+        "horizontal_scale": horizontal_scale,
+        "vertical_scale": vertical_scale,
+        "canvas_width": round(width * 96),
+        "canvas_height": round(height * 96),
         "fully_expanded": all(
             not run_graph.children(node_id) or node_id in expanded
             for node_id in run_graph.graph.nodes

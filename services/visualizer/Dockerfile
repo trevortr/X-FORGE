@@ -3,6 +3,13 @@ FROM python:3.11-slim
 ENV MPLBACKEND=svg \
     MPLCONFIGDIR=/tmp/matplotlib
 
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        libexpat1 \
+        libxext6 \
+        libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /srv/visualizer
 COPY services/visualizer/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt

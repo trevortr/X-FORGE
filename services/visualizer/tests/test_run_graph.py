@@ -96,6 +96,7 @@ def test_matplotlib_svg_contains_only_visible_node_artists() -> None:
     assert initial["visible_count"] == 1
     assert initial["total_count"] == 3
     assert 'id="node-mol-aGl0"' in initial["svg"]
+    assert 'id="label-mol-aGl0"' not in initial["svg"]
     assert 'id="node-mol-Y2FuZGlkYXRl"' not in initial["svg"]
     assert 'id="node-mol-Y2FuZGlkYXRl"' in expanded["svg"]
     assert initial["fully_expanded"] is False
@@ -107,5 +108,8 @@ def test_matplotlib_svg_contains_only_visible_node_artists() -> None:
     assert complete_with_all_edges["visible_edge_count"] == 3
     assert complete_with_all_edges["total_edge_count"] == 3
     assert complete_with_all_edges["show_all_edges"] is True
+    labeled = render_svg(run_graph, frozenset(), show_labels=True)
+    assert labeled["show_labels"] is True
+    assert 'id="label-mol-aGl0"' in labeled["svg"]
     assert run_graph.node_payload("lead", frozenset())["is_leaf"] is True
     assert run_graph.node_payload("candidate", frozenset())["is_leaf"] is False

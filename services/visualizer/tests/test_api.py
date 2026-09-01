@@ -78,18 +78,41 @@ def test_skips_malformed_runs_and_rejects_unsafe_names(tmp_path: Path) -> None:
 
 def test_serves_visualizer_shell_and_health(tmp_path: Path) -> None:
     app = create_app(tmp_path)
-    (health,) = asyncio.run(_get(app, "/health"))
+    health, shell = asyncio.run(_get(app, "/health", "/"))
     index = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     route_paths = {route.path for route in app.routes}
 
     assert "Molecule lineage" in index
     assert "Reveal whole graph" in index
     assert "Show all edges" in index
+    assert "Show SMILES labels" in index
+    assert "Pan left" in index
+    assert "Wider" in index
+    assert "Taller" in index
+    assert "/static/app.js?v=" in index
+    assert "/static/styles.css?v=" in index
     assert "Leaf molecule" in index
     assert "Click to expand or collapse" in index
     assert {"/", "/static", "/health"} <= route_paths
     assert (STATIC_ROOT / "app.js").is_file()
     assert health.json() == {"status": "ok"}
+    assert shell.headers["cache-control"] == "no-store"
+
+
+def test_renders_cached_rdkit_molecule_depiction(tmp_path: Path) -> None:
+    valid, invalid = asyncio.run(
+        _get(
+            create_app(tmp_path),
+            "/api/depict?smiles=CCO",
+            "/api/depict?smiles=not-a-smiles",
+        )
+    )
+
+    assert valid.status_code == 200
+    assert valid.headers["content-type"].startswith("image/svg+xml")
+    assert valid.headers["cache-control"] == "public, max-age=86400"
+    assert "<svg" in valid.text
+    assert invalid.status_code == 422
 
 
 def test_graph_endpoint_starts_at_hit_and_expands_children(tmp_path: Path) -> None:
@@ -114,13 +137,15 @@ def test_graph_endpoint_starts_at_hit_and_expands_children(tmp_path: Path) -> No
     )
     app = create_app(tmp_path)
 
-    initial, expanded, all_nodes, all_edges, collapsed, invalid = asyncio.run(
+    initial, expanded, all_nodes, all_edges, labeled, stretched, collapsed, invalid = asyncio.run(
         _get(
             app,
             "/api/runs/lineage-run/graph",
             "/api/runs/lineage-run/graph?expanded=hit",
             "/api/runs/lineage-run/graph?show_all=true",
             "/api/runs/lineage-run/graph?show_all=true&show_all_edges=true",
+            "/api/runs/lineage-run/graph?show_labels=true",
+            "/api/runs/lineage-run/graph?horizontal_scale=1.5&vertical_scale=2",
             "/api/runs/lineage-run/graph",
             "/api/runs/lineage-run/graph?expanded=unknown",
         )
@@ -138,6 +163,16 @@ def test_graph_endpoint_starts_at_hit_and_expands_children(tmp_path: Path) -> No
     assert all_nodes.json()["fully_expanded"] is True
     assert all_nodes.json()["show_all_edges"] is False
     assert all_edges.json()["show_all_edges"] is True
+    assert initial.json()["show_labels"] is False
+    assert 'id="label-mol-aGl0"' not in initial.json()["svg"]
+    assert labeled.json()["show_labels"] is True
+    assert 'id="label-mol-aGl0"' in labeled.json()["svg"]
+    assert initial.json()["canvas_width"] > 0
+    assert initial.json()["canvas_height"] > 0
+    assert stretched.json()["canvas_width"] > initial.json()["canvas_width"]
+    assert stretched.json()["canvas_height"] > initial.json()["canvas_height"]
+    assert stretched.json()["horizontal_scale"] == 1.5
+    assert stretched.json()["vertical_scale"] == 2
     assert [node["id"] for node in collapsed.json()["nodes"]] == ["hit"]
     assert 'id="node-mol-aGl0"' in initial.json()["svg"]
     assert invalid.status_code == 422

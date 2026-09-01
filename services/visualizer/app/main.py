@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import FastAPI, HTTPException, Query, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from .depiction import MoleculeDepictionError, render_molecule_svg
 from .run_graph import MoleculeRunGraph, RunGraphError, render_svg
 
 STATIC_ROOT = Path(__file__).parent / "static"
@@ -68,6 +69,23 @@ def create_app(results_root: Path | None = None) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    @app.get("/api/depict", response_class=Response)
+    async def depict_molecule(
+        smiles: Annotated[str, Query(min_length=1, max_length=10_000)],
+    ) -> Response:
+        try:
+            svg = render_molecule_svg(smiles)
+        except MoleculeDepictionError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=str(exc),
+            ) from exc
+        return Response(
+            content=svg,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     @app.get("/api/runs")
     async def list_runs() -> dict[str, list[dict[str, Any]]]:
         runs: list[dict[str, Any]] = []
@@ -105,6 +123,9 @@ def create_app(results_root: Path | None = None) -> FastAPI:
         expanded: Annotated[list[str] | None, Query()] = None,
         show_all: bool = False,
         show_all_edges: bool = False,
+        show_labels: bool = False,
+        horizontal_scale: Annotated[float, Query(ge=1.0, le=4.0)] = 1.0,
+        vertical_scale: Annotated[float, Query(ge=1.0, le=4.0)] = 1.0,
     ) -> JSONResponse:
         try:
             run_graph = MoleculeRunGraph.from_run(load_named_run(run_name))
@@ -119,6 +140,9 @@ def create_app(results_root: Path | None = None) -> FastAPI:
                 run_graph,
                 effective_expanded,
                 show_all_edges=show_all_edges,
+                show_labels=show_labels,
+                horizontal_scale=horizontal_scale,
+                vertical_scale=vertical_scale,
             )
         except RunGraphError as exc:
             raise HTTPException(
@@ -135,7 +159,10 @@ def create_app(results_root: Path | None = None) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(STATIC_ROOT / "index.html")
+        return FileResponse(
+            STATIC_ROOT / "index.html",
+            headers={"Cache-Control": "no-store"},
+        )
 
     return app
 

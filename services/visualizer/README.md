@@ -9,8 +9,9 @@ builds molecule provenance with NetworkX and renders it as Matplotlib SVG.
 - Only the run's initial hit molecules are displayed when a run is loaded.
 - Clicking a visible molecule reveals its immediate generated children;
   clicking it again collapses that branch.
-- Hovering over any molecule shows its SMILES, stable ID, observed iterations,
-  parent IDs, generator metadata, and append-only score history.
+- Hovering over any molecule shows an RDKit-rendered 2D structure, its SMILES,
+  stable ID, observed iterations, parent IDs, generator metadata, and
+  append-only score history.
 - Reveal whole graph expands every default lineage branch at once. Reset
   returns the graph to the initial hits.
 - By default, the graph uses one earliest-observed parent per molecule and
@@ -19,6 +20,9 @@ builds molecule provenance with NetworkX and renders it as Matplotlib SVG.
   clean tree used for node expansion.
 - Leaf molecules are squares; molecules with children are circles (initial
   hits retain their diamond marker).
+- SMILES labels are hidden by default and can be enabled explicitly. The
+  viewport toolbar provides zoom in/out, fit, four-direction panning, separate
+  horizontal/vertical canvas expansion, and view reset controls.
 
 Edges are reconstructed from every iteration's `generated` population rather
 than only from the deduplicated molecule catalog. If the same stable molecule
