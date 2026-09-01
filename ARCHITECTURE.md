@@ -43,7 +43,7 @@ request options and metadata remain local.
 |---|---|---:|---|
 | Generator | `generator` | `12000` | Resident API |
 | ADMET screen and MOO | `admet-moo` | `12001` | Resident API |
-| Legacy synthesizability | `synthesizability` | `12002` | Resident API |
+| Optional synthesizability | `synthesizability` | `12002` | Resident API |
 | Policy scoring | `policy-scoring` | `12003` | Resident API |
 | Binding | `binding` | `12004` | Resident API |
 | Physchem | `physchem` | `12005` | Resident API |
@@ -68,6 +68,8 @@ Configuration separates experimental intent from deployment location:
 - `config/services.yaml` maps logical service names to internal URLs.
 - `config/pipeline.yaml` is the backward-compatible, runnable reference flow.
 - `config/pipeline.tiered.example.yaml` demonstrates the full Tier 0-5 flow.
+- `config/pipeline.serotonin_sert.yaml` is the checked-in six-iteration,
+  physics-free SERT demonstration with a matching result set under `results/`.
 - `config/examples/` contains ten schema-validated workflow variants and an
   evidence-requirement index.
 - `config/targets/*.yaml` contains target identity and starting hits.
@@ -119,7 +121,7 @@ retain their previous behavior.
 ### Shared scoring/filter contract
 
 `policy-scoring`, `physchem`, `admet-moo` Tier 2, `binding`, `physics`, and the
-legacy `synthesizability` service expose:
+optional `synthesizability` service expose:
 
 ```text
 POST /score
@@ -152,7 +154,9 @@ POST /optimize
   response: evaluated population, Front 1, selected portfolio, metadata
 ```
 
-All services expose `/live` and `/health` endpoints.
+All resident scientific services expose `/live` and `/health` endpoints. The
+read-only visualizer exposes `/health`, `/api/runs`, `/api/runs/{name}`,
+`/api/runs/{name}/graph`, and `/api/depict`.
 
 ## 4. Molecule provenance
 
@@ -175,8 +179,9 @@ class Molecule(BaseModel):
 
 Pydantic permits service-specific metadata such as desirabilities, alerts,
 routes, interactions, physics protocol IDs, Pareto rank, clusters, and synthesis
-batches. IDs are the first 16 hexadecimal characters of SHA-256 over the stored
-SMILES.
+batches. When an ID is absent, it is filled with the first 16 hexadecimal
+characters of SHA-256 over the stored SMILES. Target authors may supply an
+explicit stable ID instead.
 
 The orchestrator rejects service responses that change a scored population,
 overlap or omit a filter partition, rewrite score history, return duplicate
@@ -244,7 +249,7 @@ ADMET-AI performs one batch prediction. The screen consumes:
 | Microsomal clearance | `Clearance_Microsome_AZ` | optional upper gate |
 | Hepatocyte clearance | `Clearance_Hepatocyte_AZ` | optional upper gate |
 | Half-life | `Half_Life_Obach` | optional lower gate |
-| Permeability | `Caco2_Wang` or configured MDCK field | require native log Papp `> 0` |
+| Permeability | `Caco2_Wang` or configured MDCK field | compare raw log Papp to configured threshold |
 | P-gp | exact efflux field, else `Pgp_Broccatelli` | ratio `< 2.5` or risk gate |
 | hERG | exact pIC50 field, else `hERG` | pIC50 `< 5` or risk gate |
 | CYPs | Veith 3A4, 2D6, and 2C9 | probability upper gate |
@@ -253,6 +258,11 @@ Existing numeric molecule fields and prior `ScoreRecord.values` override model
 columns. This allows validated exact endpoints to flow through the same data
 type without changing interfaces. Model risk classifications remain named as
 probabilities when no exact ratio or potency exists.
+
+Current ADMET-AI `Caco2_Wang` output is `log10(Papp in cm/s)`, so a physical
+cutoff of `10^-6 cm/s` requires `min_log_papp: -6.0`. The Pydantic schema's
+backward-compatible default remains `0.0` and must be overridden when consuming
+that raw model column; the screening code does not perform a unit conversion.
 
 Continuous threshold-centered desirabilities form a minimization matrix for
 PyMOO non-dominated sorting. Hard-gate survivors are ordered by Pareto rank and
@@ -362,15 +372,28 @@ One orchestrator invocation:
 Early completion occurs when generation is empty, all candidates are filtered,
 or final selection returns no lead. A run directory is set by
 `XFORGE_RUN_NAME`; otherwise the target slug and high-resolution UTC timestamp
-form the name.
+form the name. The current Compose file statically starts every orchestrated
+scientific dependency even when a YAML omits a stage; omitted stages are not
+called and therefore perform no scoring work.
 
 ## 7. Visualization
 
-The visualizer mounts `results/` read-only. NetworkX builds lineage and
-Matplotlib produces SVG layers; browser JavaScript manages visibility. Initial
-hits appear first, clicking toggles descendants, whole-graph reveal is
-available, and cycles/secondary parents remain hidden until **Show all edges**
-is enabled. Leaf nodes are square.
+The visualizer mounts `results/` read-only. NetworkX reconstructs lineage from
+initial seeds and every iteration's generated parent relation; Matplotlib
+produces SVG and browser JavaScript manages visibility. Initial hits appear
+first and clicking a node toggles its descendants. By default an
+earliest-observed primary-parent forest hides cycles and secondary parents;
+**Show all edges** restores them. Initial hits are diamonds, branch nodes are
+circles, and leaves are squares. SMILES labels are opt-in.
+
+Hover or keyboard focus opens an inspector with append-only provenance, score
+history, and a cached RDKit SVG depiction served by `/api/depict`. The graph
+panel is constrained to the available browser viewport and owns its scrollbars,
+so SVG zoom does not change page height. Controls provide zoom, fit, WASD/button
+panning, reset, and server-side horizontal/vertical layout expansion from 1x to
+4x. Keyboard shortcuts are `+`/`-`, `WASD`, `F`, `R`, and the arrow keys; `=`
+is also accepted for zoom-in, while left and down reverse width and height
+expansion, respectively.
 
 ## 8. Reproducibility and evidence boundaries
 
@@ -415,6 +438,9 @@ CPU/library implementations, receptor preparation, and external protocols.
   exactly, although the opposite sign is conventional for negative free
   energies.
 - There is no authentication, queue, distributed scheduler, or automatic resume.
+- Large graph expansion is synchronously re-rendered by Matplotlib in the
+  visualizer API; it is suitable for inspection of current runs, not a
+  distributed million-node graph workload.
 
 ## 10. Verification
 
@@ -422,6 +448,8 @@ Unit and service suites cover desirability interpolation/geometric means,
 liability and route gates, ADMET endpoints and transition pruning, conformer
 strain/selectivity metrics, physics evidence validation, NSGA-III portfolio
 selection, diversity/batching, configuration compatibility, and append-only
-orchestration. The deterministic top-level Tier 0-5 integration test verifies
-oversampling and exact stage order without presenting mocked values as
+orchestration. Visualizer tests cover lineage reconstruction, default edge and
+label behavior, variable canvas sizing, cached RDKit depictions, and the UI
+control/shortcut shell. The deterministic top-level Tier 0-5 integration test
+verifies oversampling and exact stage order without presenting mocked values as
 scientific validation.

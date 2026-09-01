@@ -27,7 +27,8 @@ The existing runnable Sildenafil/1TBF workflow remains the default in
 `config/pipeline.yaml`. The complete funnel is provided separately in
 `config/pipeline.tiered.example.yaml` because target-specific QSAR labels,
 retrosynthesis evidence, off-target structures, and high-fidelity physics
-results must not be silently replaced with fabricated values.
+results must not be silently replaced with fabricated values. Endpoint units
+and thresholds in that template must also be reviewed for the selected model.
 
 ## Services
 
@@ -35,7 +36,7 @@ results must not be silently replaced with fabricated values.
 |---|---|---:|---|
 | `generator` | REINVENT4 Mol2Mol generation | `12000` | Resident API |
 | `admet-moo` | Tier 2 ADMET screen and Tier 5 portfolio selection | `12001` | Resident API |
-| `synthesizability` | Legacy RA-Score/SAscore nonlinear gate | `12002` | Resident API |
+| `synthesizability` | Optional RA-Score/SAscore nonlinear gate | `12002` | Resident API |
 | `policy-scoring` | Tier 0 QSAR/QED/SA/cLogP/MW reward | `12003` | Resident API |
 | `binding` | Tier 3 conformers, Vina/ProLIF, strain, off-targets | `12004` | Resident API |
 | `physchem` | Tier 1 rules, alerts, pKa evidence, route viability | `12005` | Resident API |
@@ -93,9 +94,11 @@ risks. Configured exact measurements such as P-gp efflux ratio or hERG pIC50,
 when present in prior score evidence, override model risk probabilities.
 
 Threshold-qualified candidates are Pareto-ranked and optionally truncated by
-`max_candidates` before 3D work. ADMET-AI's `Caco2_Wang` value is interpreted in
-its native `log10(Papp / (10^-6 cm/s))` units, so a threshold of `0` represents
-`Papp > 10^-6 cm/s`. Classification probabilities are retained as probabilities;
+`max_candidates` before 3D work. ADMET-AI's `Caco2_Wang` value is consumed on
+its raw `log10(Papp in cm/s)` scale, so `min_log_papp: -6.0` represents
+`Papp > 10^-6 cm/s`. The model schema currently defaults this threshold to
+`0.0`; project configurations using raw `Caco2_Wang` predictions must override
+that impractical default. Classification probabilities remain probabilities;
 the service does not relabel them as efflux ratios or pIC50 values.
 
 ### Tier 3: structure-based evaluation
@@ -174,7 +177,9 @@ results/<run-name>/
 ```
 
 Score records are append-only. This retains repeated observations across stages
-and iterations rather than overwriting them.
+and iterations rather than overwriting them. Missing molecule IDs are derived
+from the first 16 hexadecimal characters of the stored SMILES SHA-256 digest;
+targets may instead provide an explicit stable ID.
 
 ## Quick start
 
@@ -191,14 +196,31 @@ XFORGE_RUN_NAME=sildenafil-demo \
 
 If `XFORGE_RUN_NAME` is omitted, the result directory uses the target slug and a
 UTC timestamp. To use the full tiered template, first supply its explicitly
-marked target-specific inputs, then mount it as `/config/pipeline.yaml` or copy
-it to a project-specific pipeline file.
+marked target-specific inputs. Alternate checked-in configurations can be run
+without replacing the default file by overriding the one-shot command:
+
+```bash
+XFORGE_RUN_NAME=serotonin-sert-demo \
+  docker compose run --rm orchestrator \
+  python -m app.main \
+  --pipeline /config/pipeline.serotonin_sert.yaml \
+  --services /config/services.yaml
+```
+
+The Compose definition currently declares every orchestrated scientific API as
+an orchestrator dependency. A pipeline that omits Tier 4 performs no physics
+scoring, although the lightweight `physics` evidence-validation API is still
+started by Compose.
 
 Ten additional configurations, ranging from generation-only through
 high-fidelity physics, are indexed in
 [config/examples/README.md](config/examples/README.md). The recommended
 physics-optional starting point is
 [`07_low_cost_no_physics.yaml`](config/examples/07_low_cost_no_physics.yaml).
+The repository also includes runnable Sildenafil/PDE5 (1TBF), ibuprofen/COX-2
+(4PH9), and serotonin/SERT (7LIA) target assets. The serotonin configuration is
+a six-iteration, 50-candidate physics-free example; its single affinity label
+is a local redocking score, not an experimentally validated SERT QSAR model.
 
 Start the visualizer independently:
 
@@ -206,23 +228,34 @@ Start the visualizer independently:
 docker compose up --build -d visualizer
 ```
 
-Open `http://localhost:12010`. Clicking a molecule expands or collapses its
-children, **Reveal whole graph** displays all nodes, and **Show all edges**
-restores cycles and secondary parents hidden by default.
+Open `http://localhost:12010`. The fixed-size graph viewport scrolls internally,
+so zooming never lengthens the browser page. Clicking a molecule expands or
+collapses its children; hovering shows provenance, score history, and an
+RDKit-rendered 2D structure. **Reveal whole graph** displays all nodes,
+**Show all edges** restores cycles and secondary parents hidden by default, and
+**Show SMILES labels** opts into labels that are hidden for legibility.
+
+The toolbar supports zoom, fit, four-way pan, reversible horizontal/vertical
+spacing, and view reset. Keyboard equivalents are `+`/`-` (zoom), `WASD`
+(pan), `F` (fit), `R` (reset view), left/right arrows (narrower/wider), and
+down/up arrows (shorter/taller). Both `+` and its unshifted `=` key zoom in.
 
 ## Repository layout
 
 ```text
 X-FORGE/
 |-- config/
+|   |-- examples/
 |   |-- pipeline.yaml
 |   |-- pipeline.tiered.example.yaml
+|   |-- pipeline.serotonin_sert.yaml
 |   |-- services.yaml
 |   `-- targets/
 |-- libs/schemas/
 |-- models/reinvent/
 |-- services/
 |   |-- generator/
+|   |-- admet_ai/
 |   |-- policy_scoring/
 |   |-- physchem/
 |   |-- admet_moo/
