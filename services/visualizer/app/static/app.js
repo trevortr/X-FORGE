@@ -178,13 +178,21 @@ function panGraph(horizontal, vertical) {
   });
 }
 
-async function expandCanvas(axis) {
+async function resizeCanvas(axis, direction) {
+  const previousScale = axis === "horizontal" ? horizontalScale : verticalScale;
   const oldWidth = canvasSize.width * zoom;
   const oldHeight = canvasSize.height * zoom;
   const centerX = (ui.graph.scrollLeft + ui.graph.clientWidth / 2) / oldWidth;
   const centerY = (ui.graph.scrollTop + ui.graph.clientHeight / 2) / oldHeight;
-  if (axis === "horizontal") horizontalScale = Math.min(4, horizontalScale * 1.25);
-  if (axis === "vertical") verticalScale = Math.min(4, verticalScale * 1.25);
+  const factor = direction > 0 ? 1.25 : 1 / 1.25;
+  if (axis === "horizontal") {
+    horizontalScale = Math.min(4, Math.max(1, horizontalScale * factor));
+  }
+  if (axis === "vertical") {
+    verticalScale = Math.min(4, Math.max(1, verticalScale * factor));
+  }
+  const nextScale = axis === "horizontal" ? horizontalScale : verticalScale;
+  if (nextScale === previousScale) return;
   await renderGraph();
   window.requestAnimationFrame(() => {
     const newWidth = canvasSize.width * zoom;
@@ -194,6 +202,46 @@ async function expandCanvas(axis) {
       top: centerY * newHeight - ui.graph.clientHeight / 2,
     });
   });
+}
+
+function acceptsTextInput(target) {
+  return target instanceof HTMLElement && (
+    target.isContentEditable
+    || target.matches("input, textarea")
+  );
+}
+
+function handleShortcut(event) {
+  if (
+    !selectedRun
+    || event.defaultPrevented
+    || event.ctrlKey
+    || event.metaKey
+    || event.altKey
+    || acceptsTextInput(event.target)
+  ) return;
+
+  const key = event.key.toLowerCase();
+  const actions = {
+    "+": () => setZoom(zoom * 1.25),
+    "=": () => setZoom(zoom * 1.25),
+    "-": () => setZoom(zoom / 1.25),
+    w: () => panGraph(0, -1),
+    a: () => panGraph(-1, 0),
+    s: () => panGraph(0, 1),
+    d: () => panGraph(1, 0),
+    f: fitGraph,
+    r: resetViewport,
+    arrowleft: () => resizeCanvas("horizontal", -1),
+    arrowright: () => resizeCanvas("horizontal", 1),
+    arrowup: () => resizeCanvas("vertical", 1),
+    arrowdown: () => resizeCanvas("vertical", -1),
+  };
+  const action = actions[key];
+  if (!action) return;
+  if (event.repeat && key.startsWith("arrow")) return;
+  event.preventDefault();
+  action();
 }
 
 function resetViewportState() {
@@ -340,7 +388,10 @@ function showEmpty(title, copy) {
   ui.graph.replaceChildren(container);
 }
 
-ui.select.addEventListener("change", () => selectRun(ui.select.value));
+ui.select.addEventListener("change", () => {
+  selectRun(ui.select.value);
+  ui.select.blur();
+});
 ui.refresh.addEventListener("click", loadRuns);
 ui.revealAll.addEventListener("click", () => renderGraph(true));
 ui.showAllEdges.addEventListener("change", () => renderGraph());
@@ -352,8 +403,8 @@ ui.panLeft.addEventListener("click", () => panGraph(-1, 0));
 ui.panUp.addEventListener("click", () => panGraph(0, -1));
 ui.panDown.addEventListener("click", () => panGraph(0, 1));
 ui.panRight.addEventListener("click", () => panGraph(1, 0));
-ui.expandHorizontal.addEventListener("click", () => expandCanvas("horizontal"));
-ui.expandVertical.addEventListener("click", () => expandCanvas("vertical"));
+ui.expandHorizontal.addEventListener("click", () => resizeCanvas("horizontal", 1));
+ui.expandVertical.addEventListener("click", () => resizeCanvas("vertical", 1));
 ui.resetView.addEventListener("click", resetViewport);
 ui.reset.addEventListener("click", () => {
   expanded = new Set();
@@ -362,4 +413,5 @@ ui.reset.addEventListener("click", () => {
   renderGraph();
 });
 window.addEventListener("resize", applyZoom);
+document.addEventListener("keydown", handleShortcut);
 loadRuns();

@@ -23,6 +23,12 @@ builds molecule provenance with NetworkX and renders it as Matplotlib SVG.
 - SMILES labels are hidden by default and can be enabled explicitly. The
   viewport toolbar provides zoom in/out, fit, four-direction panning, separate
   horizontal/vertical canvas expansion, and view reset controls.
+- Keyboard shortcuts mirror the viewport controls: `+`/`-` zoom, `WASD` pans,
+  `F` fits, `R` resets the view, left/right arrows reduce/increase width, and
+  down/up arrows reduce/increase height. Shortcuts are ignored in text-entry
+  fields.
+- The graph panel stays fixed to the available browser viewport; zooming and
+  canvas expansion scroll inside that panel rather than lengthening the page.
 
 Edges are reconstructed from every iteration's `generated` population rather
 than only from the deduplicated molecule catalog. If the same stable molecule

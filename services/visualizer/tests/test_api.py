@@ -80,6 +80,8 @@ def test_serves_visualizer_shell_and_health(tmp_path: Path) -> None:
     app = create_app(tmp_path)
     health, shell = asyncio.run(_get(app, "/health", "/"))
     index = (STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+    script = (STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    styles = (STATIC_ROOT / "styles.css").read_text(encoding="utf-8")
     route_paths = {route.path for route in app.routes}
 
     assert "Molecule lineage" in index
@@ -89,12 +91,20 @@ def test_serves_visualizer_shell_and_health(tmp_path: Path) -> None:
     assert "Pan left" in index
     assert "Wider" in index
     assert "Taller" in index
+    assert 'aria-keyshortcuts="ArrowRight"' in index
+    assert "WASD" in index
     assert "/static/app.js?v=" in index
     assert "/static/styles.css?v=" in index
     assert "Leaf molecule" in index
     assert "Click to expand or collapse" in index
     assert {"/", "/static", "/health"} <= route_paths
     assert (STATIC_ROOT / "app.js").is_file()
+    assert 'document.addEventListener("keydown", handleShortcut)' in script
+    assert 'arrowleft: () => resizeCanvas("horizontal", -1)' in script
+    assert 'arrowdown: () => resizeCanvas("vertical", -1)' in script
+    assert '"=": () => setZoom(zoom * 1.25)' in script
+    assert "height: 100dvh" in styles
+    assert "grid-template-rows: auto minmax(0, 1fr)" in styles
     assert health.json() == {"status": "ok"}
     assert shell.headers["cache-control"] == "no-store"
 
